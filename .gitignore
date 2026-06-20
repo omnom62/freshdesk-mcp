@@ -1,0 +1,59 @@
+# ============================================================================
+# Go Build & Dependency Artifacts
+# ============================================================================
+# Compiled binaries for multiple platforms
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+dist/
+
+# Test binaries and coverage reports
+*.test
+*.out
+coverage.txt
+
+# Go workspace files (keep committed if team requires it, otherwise ignore)
+go.work
+go.work.sum
+
+# Dependency directories (uncomment if you do not use Go modules cache)
+# vendor/
+
+# ============================================================================
+# MCP & AI Development Configurations
+# ============================================================================
+# Local environment variables (API keys, connection strings, auth tokens)
+.env
+.env.local
+.env.*.local
+
+# AI/IDE Specific MCP configurations and local execution definitions
+# e.g., Cursor, Claude Desktop app configurations, or local client logs
+.cursor/
+mcp-config.json
+mcp-debug.log
+mcp-trace.json
+
+# Tool live-reloading artifacts (like Air for Go)
+tmp/
+.air.toml
+
+# ============================================================================
+# Operating System & IDE Specifics
+# ============================================================================
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+
+# JetBrains (GoLand)
+.idea/
+
+# VS Code
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json

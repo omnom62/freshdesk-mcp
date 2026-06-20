@@ -1,0 +1,41 @@
+package extract
+
+import (
+	"context"
+	"fmt"
+
+	vision "cloud.google.com/go/vision/v2/apiv1"
+	"cloud.google.com/go/vision/v2/apiv1/visionpb"
+	"google.golang.org/api/option"
+)
+
+// ImageOCR extracts text from an image using GCP Vision API.
+func ImageOCR(ctx context.Context, data []byte, gcpProject string) (string, error) {
+	client, err := vision.NewImageAnnotatorClient(ctx,
+		option.WithQuotaProject(gcpProject),
+	)
+	if err != nil {
+		return "", fmt.Errorf("create vision client: %w", err)
+	}
+	defer client.Close()
+
+	resp, err := client.BatchAnnotateImages(ctx, &visionpb.BatchAnnotateImagesRequest{
+		Requests: []*visionpb.AnnotateImageRequest{
+			{
+				Image: &visionpb.Image{Content: data},
+				Features: []*visionpb.Feature{
+					{Type: visionpb.Feature_TEXT_DETECTION},
+				},
+			},
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("annotate image: %w", err)
+	}
+
+	if len(resp.Responses) == 0 || resp.Responses[0].FullTextAnnotation == nil {
+		return "", nil
+	}
+
+	return resp.Responses[0].FullTextAnnotation.Text, nil
+}

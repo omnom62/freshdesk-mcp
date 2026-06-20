@@ -1,0 +1,417 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"strings"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/whalebone/freshdesk-mcp/internal/extract"
+	"github.com/whalebone/freshdesk-mcp/internal/freshdesk"
+)
+
+type GetTicketInput struct {
+	TicketID int64 `json:"ticket_id"`
+}
+
+type GetTicketOutput struct {
+	ID           int64          `json:"id"`
+	Subject      string         `json:"subject"`
+	Status       int            `json:"status"`
+	Type         string         `json:"type"`
+	Priority     int            `json:"priority"`
+	DueBy        string         `json:"due_by"`
+	IsEscalated  bool           `json:"is_escalated"`
+	CreatedAt    string         `json:"created_at"`
+	Tags         []string       `json:"tags"`
+	CustomFields map[string]any `json:"custom_fields"`
+}
+
+type SearchTicketsInput struct {
+	Query    string `json:"query,omitempty"`
+	Status   int    `json:"status,omitempty"`
+	Priority int    `json:"priority,omitempty"`
+	Overdue  *bool  `json:"overdue,omitempty"`
+}
+
+type SearchTicketsOutput struct {
+	Total   int               `json:"total"`
+	Results []GetTicketOutput `json:"results"`
+}
+
+type GetConversationsInput struct {
+	TicketID int64 `json:"ticket_id"`
+}
+
+type ConversationOutput struct {
+	ID        int64  `json:"id"`
+	BodyText  string `json:"body_text"`
+	Incoming  bool   `json:"incoming"`
+	Private   bool   `json:"private"`
+	CreatedAt string `json:"created_at"`
+}
+
+type GetConversationsOutput struct {
+	TicketID      int64                `json:"ticket_id"`
+	Conversations []ConversationOutput `json:"conversations"`
+}
+
+type GetAttachmentTextInput struct {
+	TicketID     int64 `json:"ticket_id"`
+	AttachmentID int64 `json:"attachment_id"`
+}
+
+type GetAttachmentTextOutput struct {
+	AttachmentID int64  `json:"attachment_id"`
+	Name         string `json:"name"`
+	Text         string `json:"text"`
+}
+
+type ListAttachmentsInput struct {
+	TicketID int64 `json:"ticket_id"`
+}
+
+type AttachmentInfo struct {
+	ID          int64  `json:"id"`
+	Name        string `json:"name"`
+	ContentType string `json:"content_type"`
+	Size        int64  `json:"size"`
+}
+
+type ListAttachmentsOutput struct {
+	TicketID    int64            `json:"ticket_id"`
+	Attachments []AttachmentInfo `json:"attachments"`
+}
+
+type QueryAttachmentInput struct {
+	TicketID     int64  `json:"ticket_id"`
+	AttachmentID int64  `json:"attachment_id"`
+	Query        string `json:"query"`
+}
+
+type QueryAttachmentOutput struct {
+	AttachmentID int64  `json:"attachment_id"`
+	Name         string `json:"name"`
+	Query        string `json:"query"`
+	Result       string `json:"result"`
+}
+
+type FindImageAttachmentsInput struct {
+	TicketIDs []int64 `json:"ticket_ids"`
+}
+
+type ImageAttachmentInfo struct {
+	TicketID     int64  `json:"ticket_id"`
+	AttachmentID int64  `json:"attachment_id"`
+	Name         string `json:"name"`
+	Size         int64  `json:"size"`
+}
+
+type FindImageAttachmentsOutput struct {
+	Total   int                   `json:"total"`
+	Results []ImageAttachmentInfo `json:"results"`
+}
+
+func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server {
+	server := mcp.NewServer(&mcp.Implementation{
+		Name:    "freshdesk-mcp",
+		Version: "v0.1.0",
+	}, nil)
+
+	mcp.AddTool(server,
+		&mcp.Tool{
+			Name:        "get_ticket",
+			Description: "Retrieve a Freshdesk support ticket by its ID",
+		},
+		func(ctx context.Context, req *mcp.CallToolRequest, input GetTicketInput) (*mcp.CallToolResult, GetTicketOutput, error) {
+			ticket, err := client.GetTicket(ctx, input.TicketID)
+			if err != nil {
+				return nil, GetTicketOutput{}, fmt.Errorf("get_ticket: %w", err)
+			}
+			return nil, ticketToOutput(ticket), nil
+		},
+	)
+
+	mcp.AddTool(server,
+		&mcp.Tool{
+			Name:        "search_tickets",
+			Description: "Search Freshdesk tickets. Filter by query (subject/type text), status (2=open, 3=pending, 4=resolved, 5=closed), priority (1=low, 2=medium, 3=high, 4=urgent), or overdue=true for past-due open tickets.",
+		},
+		func(ctx context.Context, req *mcp.CallToolRequest, input SearchTicketsInput) (*mcp.CallToolResult, SearchTicketsOutput, error) {
+			tickets, err := client.SearchTickets(ctx, freshdesk.TicketFilter{
+				Query:    input.Query,
+				Status:   input.Status,
+				Priority: input.Priority,
+				Overdue:  input.Overdue != nil && *input.Overdue,
+			})
+			if err != nil {
+				return nil, SearchTicketsOutput{}, fmt.Errorf("search_tickets: %w", err)
+			}
+			results := make([]GetTicketOutput, len(tickets))
+			for i, t := range tickets {
+				results[i] = ticketToOutput(&t)
+			}
+			return nil, SearchTicketsOutput{Total: len(results), Results: results}, nil
+		},
+	)
+
+	mcp.AddTool(server,
+		&mcp.Tool{
+			Name:        "get_conversations",
+			Description: "Get all replies and notes for a Freshdesk ticket including analyst responses and investigation notes.",
+		},
+		func(ctx context.Context, req *mcp.CallToolRequest, input GetConversationsInput) (*mcp.CallToolResult, GetConversationsOutput, error) {
+			convs, err := client.GetConversations(ctx, input.TicketID)
+			if err != nil {
+				return nil, GetConversationsOutput{}, fmt.Errorf("get_conversations: %w", err)
+			}
+			results := make([]ConversationOutput, len(convs))
+			for i, c := range convs {
+				results[i] = ConversationOutput{
+					ID:        c.ID,
+					BodyText:  c.BodyText,
+					Incoming:  c.Incoming,
+					Private:   c.Private,
+					CreatedAt: c.CreatedAt,
+				}
+			}
+			return nil, GetConversationsOutput{
+				TicketID:      input.TicketID,
+				Conversations: results,
+			}, nil
+		},
+	)
+
+	mcp.AddTool(server,
+		&mcp.Tool{
+			Name:        "get_attachment_text",
+			Description: "Extract text content from a Freshdesk ticket attachment. Supports .docx, .xlsx, .json, .txt, .png, .jpg, .jpeg files.",
+		},
+		func(ctx context.Context, req *mcp.CallToolRequest, input GetAttachmentTextInput) (*mcp.CallToolResult, GetAttachmentTextOutput, error) {
+			attachments, err := client.GetAllAttachments(ctx, input.TicketID)
+			if err != nil {
+				return nil, GetAttachmentTextOutput{}, fmt.Errorf("get attachments: %w", err)
+			}
+
+			var att *freshdesk.Attachment
+			for i := range attachments {
+				if attachments[i].ID == input.AttachmentID {
+					att = &attachments[i]
+					break
+				}
+			}
+			if att == nil {
+				return nil, GetAttachmentTextOutput{}, fmt.Errorf("attachment %d not found on ticket %d", input.AttachmentID, input.TicketID)
+			}
+
+			data, err := client.DownloadAttachment(ctx, att.URL)
+			if err != nil {
+				return nil, GetAttachmentTextOutput{}, fmt.Errorf("download: %w", err)
+			}
+
+			text, err := extract.FromAttachment(ctx, att.Name, att.ContentType, data, gcpVisionProject)
+			if err != nil {
+				return nil, GetAttachmentTextOutput{}, fmt.Errorf("extract: %w", err)
+			}
+
+			return nil, GetAttachmentTextOutput{
+				AttachmentID: att.ID,
+				Name:         att.Name,
+				Text:         text,
+			}, nil
+		},
+	)
+
+	mcp.AddTool(server,
+		&mcp.Tool{
+			Name:        "list_attachments",
+			Description: "List all attachments on a Freshdesk ticket including those in conversations. Returns id, name, content_type and size for each.",
+		},
+		func(ctx context.Context, req *mcp.CallToolRequest, input ListAttachmentsInput) (*mcp.CallToolResult, ListAttachmentsOutput, error) {
+			attachments, err := client.GetAllAttachments(ctx, input.TicketID)
+			if err != nil {
+				return nil, ListAttachmentsOutput{}, fmt.Errorf("list_attachments: %w", err)
+			}
+
+			results := make([]AttachmentInfo, len(attachments))
+			for i, a := range attachments {
+				results[i] = AttachmentInfo{
+					ID:          a.ID,
+					Name:        a.Name,
+					ContentType: a.ContentType,
+					Size:        a.Size,
+				}
+			}
+
+			return nil, ListAttachmentsOutput{
+				TicketID:    input.TicketID,
+				Attachments: results,
+			}, nil
+		},
+	)
+
+	mcp.AddTool(server,
+		&mcp.Tool{
+			Name:        "query_attachment",
+			Description: "Search within a JSON attachment on a Freshdesk ticket. Useful for finding specific domains or threat feeds in large JSON files.",
+		},
+		func(ctx context.Context, req *mcp.CallToolRequest, input QueryAttachmentInput) (*mcp.CallToolResult, QueryAttachmentOutput, error) {
+			attachments, err := client.GetAllAttachments(ctx, input.TicketID)
+			if err != nil {
+				return nil, QueryAttachmentOutput{}, fmt.Errorf("get attachments: %w", err)
+			}
+
+			var att *freshdesk.Attachment
+			for i := range attachments {
+				if attachments[i].ID == input.AttachmentID {
+					att = &attachments[i]
+					break
+				}
+			}
+			if att == nil {
+				return nil, QueryAttachmentOutput{}, fmt.Errorf("attachment %d not found", input.AttachmentID)
+			}
+
+			data, err := client.DownloadAttachment(ctx, att.URL)
+			if err != nil {
+				return nil, QueryAttachmentOutput{}, fmt.Errorf("download: %w", err)
+			}
+
+			result, err := extract.QueryJSON(data, input.Query)
+			if err != nil {
+				return nil, QueryAttachmentOutput{}, fmt.Errorf("query: %w", err)
+			}
+
+			return nil, QueryAttachmentOutput{
+				AttachmentID: att.ID,
+				Name:         att.Name,
+				Query:        input.Query,
+				Result:       result,
+			}, nil
+		},
+	)
+
+	mcp.AddTool(server,
+		&mcp.Tool{
+			Name:        "find_image_attachments",
+			Description: "Scan a list of ticket IDs and return all image attachments (png, jpg, jpeg). Use this before get_attachment_text to find images for OCR.",
+		},
+		func(ctx context.Context, req *mcp.CallToolRequest, input FindImageAttachmentsInput) (*mcp.CallToolResult, FindImageAttachmentsOutput, error) {
+			var results []ImageAttachmentInfo
+
+			for _, ticketID := range input.TicketIDs {
+				attachments, err := client.GetAllAttachments(ctx, ticketID)
+				if err != nil {
+					continue
+				}
+
+				for _, a := range attachments {
+					if isImage(a.Name, a.ContentType) {
+						results = append(results, ImageAttachmentInfo{
+							TicketID:     ticketID,
+							AttachmentID: a.ID,
+							Name:         a.Name,
+							Size:         a.Size,
+						})
+					}
+				}
+			}
+
+			return nil, FindImageAttachmentsOutput{
+				Total:   len(results),
+				Results: results,
+			}, nil
+		},
+	)
+
+	return server
+}
+
+func main() {
+	client := freshdesk.NewClient(
+		"https://"+os.Getenv("FRESHDESK_DOMAIN")+".freshdesk.com",
+		os.Getenv("FRESHDESK_API_KEY"),
+	)
+
+	gcpVisionProject := os.Getenv("GCP_VISION_PROJECT")
+	if gcpVisionProject == "" {
+		log.Fatal("GCP_VISION_PROJECT environment variable is required")
+	}
+
+	server := buildServer(client, gcpVisionProject)
+
+	switch os.Getenv("MCP_TRANSPORT") {
+	case "http":
+		addr := ":" + port()
+		token := os.Getenv("MCP_TOKEN")
+		if token == "" {
+			log.Fatal("MCP_TOKEN environment variable is required in HTTP mode")
+		}
+		log.Printf("freshdesk-mcp HTTP server starting on %s", addr)
+		handler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
+			return server
+		}, nil)
+		mux := http.NewServeMux()
+		mux.Handle("/mcp", authMiddleware(token, handler))
+		if err := http.ListenAndServe(addr, mux); err != nil {
+			log.Fatalf("http server error: %v", err)
+		}
+	default:
+		log.Println("freshdesk-mcp server starting on stdio")
+		if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
+			log.Fatalf("server error: %v", err)
+		}
+	}
+}
+
+func port() string {
+	if p := os.Getenv("PORT"); p != "" {
+		return p
+	}
+	return "8080"
+}
+
+func authMiddleware(token string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		if auth != "Bearer "+token {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func isImage(name, contentType string) bool {
+	imageTypes := []string{"image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"}
+	for _, t := range imageTypes {
+		if contentType == t {
+			return true
+		}
+	}
+	imageSuffixes := []string{".png", ".jpg", ".jpeg", ".gif", ".webp"}
+	for _, s := range imageSuffixes {
+		if strings.HasSuffix(strings.ToLower(name), s) {
+			return true
+		}
+	}
+	return false
+}
+
+func ticketToOutput(t *freshdesk.Ticket) GetTicketOutput {
+	return GetTicketOutput{
+		ID:           t.ID,
+		Subject:      t.Subject,
+		Status:       t.Status,
+		Type:         t.Type,
+		Priority:     t.Priority,
+		DueBy:        t.DueBy,
+		IsEscalated:  t.IsEscalated,
+		CreatedAt:    t.CreatedAt,
+		Tags:         t.Tags,
+		CustomFields: t.CustomFields,
+	}
+}
