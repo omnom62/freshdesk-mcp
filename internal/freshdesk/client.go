@@ -31,6 +31,8 @@ type Ticket struct {
 	Status       int            `json:"status"`
 	Type         string         `json:"type"`
 	Priority     int            `json:"priority"`
+	RequesterID  int64          `json:"requester_id"`
+	CompanyID    int64          `json:"company_id"`
 	DueBy        string         `json:"due_by"`
 	FrDueBy      string         `json:"fr_due_by"`
 	IsEscalated  bool           `json:"is_escalated"`
@@ -43,10 +45,16 @@ type Ticket struct {
 }
 
 type TicketFilter struct {
-	Query    string
-	Status   int // 0 = any, 2=open, 3=pending, 4=resolved, 5=closed
-	Priority int // 0 = any, 1=low, 2=medium, 3=high, 4=urgent
-	Overdue  bool
+	Query         string
+	Status        int
+	Priority      int
+	Overdue       bool
+	Type          string
+	IsEscalated   bool
+	CreatedAfter  string
+	CreatedBefore string
+	RequesterID   int64
+	CompanyID     int64
 }
 
 type Conversation struct {
@@ -75,6 +83,19 @@ type Attachment struct {
 	ContentType string `json:"content_type"`
 	Size        int64  `json:"size"`
 	URL         string `json:"attachment_url"`
+}
+
+type Contact struct {
+	ID    int64  `json:"id"`
+	Name  string `json:"name"`
+	Email string `json:"email"`
+	Phone string `json:"phone"`
+}
+
+type Company struct {
+	ID      int64    `json:"id"`
+	Name    string   `json:"name"`
+	Domains []string `json:"domains"`
 }
 
 func (c *Client) doRequest(ctx context.Context, method, path string) ([]byte, error) {
@@ -174,24 +195,6 @@ func (c *Client) ListTickets(ctx context.Context) ([]Ticket, error) {
 	return all, nil
 }
 
-// func (c *Client) SearchTickets(ctx context.Context, query string) ([]Ticket, error) {
-// 	tickets, err := c.ListTickets(ctx)
-// 	if err != nil {
-// 		return nil, fmt.Errorf("SearchTickets: %w", err)
-// 	}
-
-// 	q := strings.ToLower(query)
-// 	var matches []Ticket
-// 	for _, t := range tickets {
-// 		if strings.Contains(strings.ToLower(t.Subject), q) ||
-// 			strings.Contains(strings.ToLower(t.Type), q) {
-// 			matches = append(matches, t)
-// 		}
-// 	}
-
-// 	return matches, nil
-// }
-
 func (c *Client) SearchTickets(ctx context.Context, filter TicketFilter) ([]Ticket, error) {
 	tickets, err := c.ListTickets(ctx)
 	if err != nil {
@@ -202,7 +205,6 @@ func (c *Client) SearchTickets(ctx context.Context, filter TicketFilter) ([]Tick
 	var matches []Ticket
 
 	for _, t := range tickets {
-		// text filter
 		if filter.Query != "" {
 			q := strings.ToLower(filter.Query)
 			if !strings.Contains(strings.ToLower(t.Subject), q) &&
@@ -210,31 +212,48 @@ func (c *Client) SearchTickets(ctx context.Context, filter TicketFilter) ([]Tick
 				continue
 			}
 		}
-
-		// status filter
 		if filter.Status != 0 && t.Status != filter.Status {
 			continue
 		}
-
-		// priority filter
 		if filter.Priority != 0 && t.Priority != filter.Priority {
 			continue
 		}
-
-		// overdue filter
+		if filter.Type != "" && !strings.EqualFold(t.Type, filter.Type) {
+			continue
+		}
+		if filter.IsEscalated && !t.IsEscalated {
+			continue
+		}
+		if filter.RequesterID != 0 && t.RequesterID != filter.RequesterID {
+			continue
+		}
+		if filter.CompanyID != 0 && t.CompanyID != filter.CompanyID {
+			continue
+		}
+		if filter.CreatedAfter != "" {
+			after, err := time.Parse(time.RFC3339, filter.CreatedAfter)
+			if err == nil {
+				created, err := time.Parse(time.RFC3339, t.CreatedAt)
+				if err == nil && created.Before(after) {
+					continue
+				}
+			}
+		}
+		if filter.CreatedBefore != "" {
+			before, err := time.Parse(time.RFC3339, filter.CreatedBefore)
+			if err == nil {
+				created, err := time.Parse(time.RFC3339, t.CreatedAt)
+				if err == nil && created.After(before) {
+					continue
+				}
+			}
+		}
 		if filter.Overdue {
-			if t.DueBy == "" {
+			if t.DueBy == "" || t.Status >= 4 {
 				continue
 			}
 			dueBy, err := time.Parse(time.RFC3339, t.DueBy)
-			if err != nil {
-				continue
-			}
-			// only overdue if not resolved or closed
-			if t.Status >= 4 {
-				continue
-			}
-			if !now.After(dueBy) {
+			if err != nil || !now.After(dueBy) {
 				continue
 			}
 		}
@@ -321,4 +340,75 @@ func (c *Client) GetAllAttachments(ctx context.Context, ticketID int64) ([]Attac
 	}
 
 	return append(ticketAtts, convAtts...), nil
+}
+
+func (c *Client) SearchCompanies(ctx context.Context, query string) ([]Company, error) {
+	var all []Company
+	page := 1
+
+	for {
+		body, err := c.doRequest(ctx, "GET", fmt.Sprintf("/api/v2/companies?per_page=100&page=%d", page))
+		if err != nil {
+			return nil, fmt.Errorf("SearchCompanies page %d: %w", page, err)
+		}
+
+		var companies []Company
+		if err := json.Unmarshal(body, &companies); err != nil {
+			return nil, fmt.Errorf("decode companies: %w\nraw: %s", err, string(body))
+		}
+
+		all = append(all, companies...)
+
+		if len(companies) < 100 {
+			break
+		}
+		page++
+	}
+
+	// client-side filter by name
+	q := strings.ToLower(query)
+	var matches []Company
+	for _, co := range all {
+		if strings.Contains(strings.ToLower(co.Name), q) {
+			matches = append(matches, co)
+		}
+	}
+
+	return matches, nil
+}
+
+func (c *Client) SearchContacts(ctx context.Context, query string) ([]Contact, error) {
+	var all []Contact
+	page := 1
+
+	for {
+		body, err := c.doRequest(ctx, "GET", fmt.Sprintf("/api/v2/contacts?per_page=100&page=%d", page))
+		if err != nil {
+			return nil, fmt.Errorf("SearchContacts page %d: %w", page, err)
+		}
+
+		var contacts []Contact
+		if err := json.Unmarshal(body, &contacts); err != nil {
+			return nil, fmt.Errorf("decode contacts: %w\nraw: %s", err, string(body))
+		}
+
+		all = append(all, contacts...)
+
+		if len(contacts) < 100 {
+			break
+		}
+		page++
+	}
+
+	// client-side filter by name or email
+	q := strings.ToLower(query)
+	var matches []Contact
+	for _, co := range all {
+		if strings.Contains(strings.ToLower(co.Name), q) ||
+			strings.Contains(strings.ToLower(co.Email), q) {
+			matches = append(matches, co)
+		}
+	}
+
+	return matches, nil
 }

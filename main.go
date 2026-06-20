@@ -31,10 +31,16 @@ type GetTicketOutput struct {
 }
 
 type SearchTicketsInput struct {
-	Query    string `json:"query,omitempty"`
-	Status   int    `json:"status,omitempty"`
-	Priority int    `json:"priority,omitempty"`
-	Overdue  *bool  `json:"overdue,omitempty"`
+	Query         string `json:"query,omitempty"`
+	Status        int    `json:"status,omitempty"`
+	Priority      int    `json:"priority,omitempty"`
+	Overdue       *bool  `json:"overdue,omitempty"`
+	Type          string `json:"type,omitempty"`
+	IsEscalated   *bool  `json:"is_escalated,omitempty"`
+	CreatedAfter  string `json:"created_after,omitempty"`
+	CreatedBefore string `json:"created_before,omitempty"`
+	RequesterID   int64  `json:"requester_id,omitempty"`
+	CompanyID     int64  `json:"company_id,omitempty"`
 }
 
 type SearchTicketsOutput struct {
@@ -115,6 +121,37 @@ type FindImageAttachmentsOutput struct {
 	Results []ImageAttachmentInfo `json:"results"`
 }
 
+type FindRequesterInput struct {
+	Query string `json:"query"`
+}
+
+type RequesterOutput struct {
+	ID    int64  `json:"id"`
+	Name  string `json:"name"`
+	Email string `json:"email"`
+	Phone string `json:"phone"`
+}
+
+type FindRequesterOutput struct {
+	Total   int               `json:"total"`
+	Results []RequesterOutput `json:"results"`
+}
+
+type FindCompanyInput struct {
+	Query string `json:"query"`
+}
+
+type CompanyOutput struct {
+	ID      int64    `json:"id"`
+	Name    string   `json:"name"`
+	Domains []string `json:"domains"`
+}
+
+type FindCompanyOutput struct {
+	Total   int             `json:"total"`
+	Results []CompanyOutput `json:"results"`
+}
+
 func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "freshdesk-mcp",
@@ -124,7 +161,7 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "get_ticket",
-			Description: "Retrieve a Freshdesk support ticket by its ID",
+			Description: "Retrieve a single Freshdesk support ticket by its numeric ID. Returns full details including id, subject, status, type, priority, due_by, is_escalated, created_at, tags and custom_fields (cf_impact, cf_urgency, cf_category, cf_subcategory, cf_domain).",
 		},
 		func(ctx context.Context, req *mcp.CallToolRequest, input GetTicketInput) (*mcp.CallToolResult, GetTicketOutput, error) {
 			ticket, err := client.GetTicket(ctx, input.TicketID)
@@ -137,15 +174,36 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 
 	mcp.AddTool(server,
 		&mcp.Tool{
-			Name:        "search_tickets",
-			Description: "Search Freshdesk tickets. Filter by query (subject/type text), status (2=open, 3=pending, 4=resolved, 5=closed), priority (1=low, 2=medium, 3=high, 4=urgent), or overdue=true for past-due open tickets.",
+			Name: "search_tickets",
+			Description: `Search and filter Freshdesk tickets. All fields are optional.
+							Filters:
+							- query: text matched against subject or type
+							- status: 2=open, 3=pending, 4=resolved, 5=closed
+							- priority: 1=low, 2=medium, 3=high, 4=urgent
+							- type: "False Positive", "False Negative", "Service Request", "Incident"
+							- overdue: true = tickets past due_by that are still open or pending
+							- is_escalated: true = escalated tickets only
+							- created_after / created_before: ISO8601 date e.g. "2026-06-01T00:00:00Z"
+							- requester_id: from find_requester tool
+							- company_id: from find_company tool
+							Examples:
+							Overdue tickets: {"overdue": true}
+							Open false positives: {"type": "False Positive", "status": 2}
+							High priority open: {"status": 2, "priority": 3}
+							All tickets from Defence: first call find_company query="Defence", then use company_id`,
 		},
 		func(ctx context.Context, req *mcp.CallToolRequest, input SearchTicketsInput) (*mcp.CallToolResult, SearchTicketsOutput, error) {
 			tickets, err := client.SearchTickets(ctx, freshdesk.TicketFilter{
-				Query:    input.Query,
-				Status:   input.Status,
-				Priority: input.Priority,
-				Overdue:  input.Overdue != nil && *input.Overdue,
+				Query:         input.Query,
+				Status:        input.Status,
+				Priority:      input.Priority,
+				Overdue:       input.Overdue != nil && *input.Overdue,
+				Type:          input.Type,
+				IsEscalated:   input.IsEscalated != nil && *input.IsEscalated,
+				CreatedAfter:  input.CreatedAfter,
+				CreatedBefore: input.CreatedBefore,
+				RequesterID:   input.RequesterID,
+				CompanyID:     input.CompanyID,
 			})
 			if err != nil {
 				return nil, SearchTicketsOutput{}, fmt.Errorf("search_tickets: %w", err)
@@ -161,7 +219,7 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "get_conversations",
-			Description: "Get all replies and notes for a Freshdesk ticket including analyst responses and investigation notes.",
+			Description: "Get all replies, notes and email threads for a Freshdesk ticket. Returns body_text (plain text, HTML stripped), incoming=true means customer sent it, incoming=false means agent sent it. Use this to understand the full investigation history, analyst notes, and customer communications.",
 		},
 		func(ctx context.Context, req *mcp.CallToolRequest, input GetConversationsInput) (*mcp.CallToolResult, GetConversationsOutput, error) {
 			convs, err := client.GetConversations(ctx, input.TicketID)
@@ -187,8 +245,14 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 
 	mcp.AddTool(server,
 		&mcp.Tool{
-			Name:        "get_attachment_text",
-			Description: "Extract text content from a Freshdesk ticket attachment. Supports .docx, .xlsx, .json, .txt, .png, .jpg, .jpeg files.",
+			Name: "get_attachment_text",
+			Description: `Extract text from a Freshdesk ticket attachment. Supported formats:
+							- .docx: Word documents → plain text
+							- .xlsx: Excel spreadsheets → tab-separated rows per sheet
+							- .json: JSON files → pretty printed
+							- .txt: plain text
+							- .png .jpg .jpeg: screenshots and images → OCR via Google Vision API
+							Use list_attachments first to get the attachment_id. Ideal for reading investigation reports, domain lists, DNS screenshots and phishing page captures.`,
 		},
 		func(ctx context.Context, req *mcp.CallToolRequest, input GetAttachmentTextInput) (*mcp.CallToolResult, GetAttachmentTextOutput, error) {
 			attachments, err := client.GetAllAttachments(ctx, input.TicketID)
@@ -228,7 +292,7 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "list_attachments",
-			Description: "List all attachments on a Freshdesk ticket including those in conversations. Returns id, name, content_type and size for each.",
+			Description: "List all attachments on a Freshdesk ticket including files in conversation replies. Returns attachment id, name, content_type and size in bytes. Always call this before get_attachment_text, query_attachment or find_image_attachments to discover attachment IDs.",
 		},
 		func(ctx context.Context, req *mcp.CallToolRequest, input ListAttachmentsInput) (*mcp.CallToolResult, ListAttachmentsOutput, error) {
 			attachments, err := client.GetAllAttachments(ctx, input.TicketID)
@@ -296,8 +360,12 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 
 	mcp.AddTool(server,
 		&mcp.Tool{
-			Name:        "find_image_attachments",
-			Description: "Scan a list of ticket IDs and return all image attachments (png, jpg, jpeg). Use this before get_attachment_text to find images for OCR.",
+			Name: "find_image_attachments",
+			Description: `Scan multiple tickets at once and return all image attachments (png, jpg, jpeg).
+							Typical workflow:
+							1. search_tickets → get list of ticket IDs
+							2. find_image_attachments with those IDs → find screenshots
+							3. get_attachment_text on attachment_id → OCR the image`,
 		},
 		func(ctx context.Context, req *mcp.CallToolRequest, input FindImageAttachmentsInput) (*mcp.CallToolResult, FindImageAttachmentsOutput, error) {
 			var results []ImageAttachmentInfo
@@ -324,6 +392,51 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 				Total:   len(results),
 				Results: results,
 			}, nil
+		},
+	)
+
+	mcp.AddTool(server,
+		&mcp.Tool{
+			Name:        "find_requester",
+			Description: "Search Freshdesk contacts by name or email. Returns requester_id which can then be passed to search_tickets to find all tickets submitted by that person.",
+		},
+		func(ctx context.Context, req *mcp.CallToolRequest, input FindRequesterInput) (*mcp.CallToolResult, FindRequesterOutput, error) {
+			contacts, err := client.SearchContacts(ctx, input.Query)
+			if err != nil {
+				return nil, FindRequesterOutput{}, fmt.Errorf("find_requester: %w", err)
+			}
+			results := make([]RequesterOutput, len(contacts))
+			for i, c := range contacts {
+				results[i] = RequesterOutput{
+					ID:    c.ID,
+					Name:  c.Name,
+					Email: c.Email,
+					Phone: c.Phone,
+				}
+			}
+			return nil, FindRequesterOutput{Total: len(results), Results: results}, nil
+		},
+	)
+
+	mcp.AddTool(server,
+		&mcp.Tool{
+			Name:        "find_company",
+			Description: "Search Freshdesk companies by name. Returns company_id which can be used in search_tickets to find all tickets from a specific organisation. Example: find_company query='Defence' then search_tickets company_id=<id>.",
+		},
+		func(ctx context.Context, req *mcp.CallToolRequest, input FindCompanyInput) (*mcp.CallToolResult, FindCompanyOutput, error) {
+			companies, err := client.SearchCompanies(ctx, input.Query)
+			if err != nil {
+				return nil, FindCompanyOutput{}, fmt.Errorf("find_company: %w", err)
+			}
+			results := make([]CompanyOutput, len(companies))
+			for i, c := range companies {
+				results[i] = CompanyOutput{
+					ID:      c.ID,
+					Name:    c.Name,
+					Domains: c.Domains,
+				}
+			}
+			return nil, FindCompanyOutput{Total: len(results), Results: results}, nil
 		},
 	)
 
