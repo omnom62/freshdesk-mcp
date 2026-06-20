@@ -11,10 +11,21 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/whalebone/freshdesk-mcp/internal/extract"
 	"github.com/whalebone/freshdesk-mcp/internal/freshdesk"
+	"golang.org/x/sync/errgroup"
 )
 
 type GetTicketInput struct {
 	TicketID int64 `json:"ticket_id"`
+}
+
+type GetTicketSummaryInput struct {
+	TicketID int64 `json:"ticket_id"`
+}
+
+type GetTicketSummaryOutput struct {
+	Ticket        GetTicketOutput      `json:"ticket"`
+	Conversations []ConversationOutput `json:"conversations"`
+	Attachments   []AttachmentInfo     `json:"attachments"`
 }
 
 type GetTicketOutput struct {
@@ -150,6 +161,19 @@ type CompanyOutput struct {
 type FindCompanyOutput struct {
 	Total   int             `json:"total"`
 	Results []CompanyOutput `json:"results"`
+}
+
+type ListTicketsInput struct {
+	Status        int    `json:"status,omitempty"`
+	Priority      int    `json:"priority,omitempty"`
+	Type          string `json:"type,omitempty"`
+	CreatedAfter  string `json:"created_after,omitempty"`
+	CreatedBefore string `json:"created_before,omitempty"`
+}
+
+type ListTicketsOutput struct {
+	Total   int               `json:"total"`
+	Results []GetTicketOutput `json:"results"`
 }
 
 func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server {
@@ -437,6 +461,119 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 				}
 			}
 			return nil, FindCompanyOutput{Total: len(results), Results: results}, nil
+		},
+	)
+
+	mcp.AddTool(server,
+		&mcp.Tool{
+			Name: "get_ticket_summary",
+			Description: `Retrieve a complete summary of a Freshdesk ticket in one call: ticket details, all conversation replies and notes, and list of attachments.
+	Use this as the first tool when investigating a specific ticket — it gives everything needed to understand the full context without multiple round trips.
+	Returns:
+	- ticket: id, subject, status, type, priority, due_by, is_escalated, custom_fields
+	- conversations: all replies and notes with body_text and direction (incoming=customer, outgoing=agent)
+	- attachments: list of files with id, name, content_type, size (use get_attachment_text to read them)`,
+		},
+		func(ctx context.Context, req *mcp.CallToolRequest, input GetTicketSummaryInput) (*mcp.CallToolResult, GetTicketSummaryOutput, error) {
+			// fetch all three in parallel
+			var (
+				ticket      *freshdesk.Ticket
+				convs       []freshdesk.Conversation
+				attachments []freshdesk.Attachment
+			)
+
+			g, gctx := errgroup.WithContext(ctx)
+
+			g.Go(func() error {
+				t, err := client.GetTicket(gctx, input.TicketID)
+				if err != nil {
+					return fmt.Errorf("get ticket: %w", err)
+				}
+				ticket = t
+				return nil
+			})
+
+			g.Go(func() error {
+				c, err := client.GetConversations(gctx, input.TicketID)
+				if err != nil {
+					return fmt.Errorf("get conversations: %w", err)
+				}
+				convs = c
+				return nil
+			})
+
+			g.Go(func() error {
+				a, err := client.GetAllAttachments(gctx, input.TicketID)
+				if err != nil {
+					return fmt.Errorf("get attachments: %w", err)
+				}
+				attachments = a
+				return nil
+			})
+
+			if err := g.Wait(); err != nil {
+				return nil, GetTicketSummaryOutput{}, fmt.Errorf("get_ticket_summary: %w", err)
+			}
+
+			convResults := make([]ConversationOutput, len(convs))
+			for i, c := range convs {
+				convResults[i] = ConversationOutput{
+					ID:        c.ID,
+					BodyText:  c.BodyText,
+					Incoming:  c.Incoming,
+					Private:   c.Private,
+					CreatedAt: c.CreatedAt,
+				}
+			}
+
+			attResults := make([]AttachmentInfo, len(attachments))
+			for i, a := range attachments {
+				attResults[i] = AttachmentInfo{
+					ID:          a.ID,
+					Name:        a.Name,
+					ContentType: a.ContentType,
+					Size:        a.Size,
+				}
+			}
+
+			return nil, GetTicketSummaryOutput{
+				Ticket:        ticketToOutput(ticket),
+				Conversations: convResults,
+				Attachments:   attResults,
+			}, nil
+		},
+	)
+
+	mcp.AddTool(server,
+		&mcp.Tool{
+			Name: "list_tickets",
+			Description: `Return all Freshdesk tickets with full fields for reporting and analysis. All filters are optional.
+	Filters:
+	- status: 2=open, 3=pending, 4=resolved, 5=closed
+	- priority: 1=low, 2=medium, 3=high, 4=urgent
+	- type: "False Positive", "False Negative", "Service Request", "Incident"
+	- created_after / created_before: ISO8601 e.g. "2026-06-01T00:00:00Z"
+	Use this for bulk analysis - e.g. all false positives this month, all high priority open tickets.
+	For company or requester filtering use search_tickets instead.`,
+		},
+		func(ctx context.Context, req *mcp.CallToolRequest, input ListTicketsInput) (*mcp.CallToolResult, ListTicketsOutput, error) {
+			tickets, err := client.SearchTickets(ctx, freshdesk.TicketFilter{
+				Status:        input.Status,
+				Priority:      input.Priority,
+				Type:          input.Type,
+				CreatedAfter:  input.CreatedAfter,
+				CreatedBefore: input.CreatedBefore,
+			})
+			if err != nil {
+				return nil, ListTicketsOutput{}, fmt.Errorf("list_tickets: %w", err)
+			}
+
+			results := make([]GetTicketOutput, len(tickets))
+			for i, t := range tickets {
+				results[i] = ticketToOutput(&t)
+			}
+
+			return nil, ListTicketsOutput{Total: len(results), Results: results}, nil
 		},
 	)
 
