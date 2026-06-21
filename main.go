@@ -3,10 +3,14 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"runtime"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/whalebone/freshdesk-mcp/internal/extract"
@@ -581,6 +585,15 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 }
 
 func main() {
+	// GOMAXPROCS — Cloud Run allocates fractional CPUs, default GOMAXPROCS
+	// may be set to host CPU count. Cap it to what's actually available.
+	runtime.GOMAXPROCS(runtime.NumCPU())
+
+	// structured JSON logging
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	})))
+
 	client := freshdesk.NewClient(
 		"https://"+os.Getenv("FRESHDESK_DOMAIN")+".freshdesk.com",
 		os.Getenv("FRESHDESK_API_KEY"),
@@ -588,7 +601,8 @@ func main() {
 
 	gcpVisionProject := os.Getenv("GCP_VISION_PROJECT")
 	if gcpVisionProject == "" {
-		log.Fatal("GCP_VISION_PROJECT environment variable is required")
+		slog.Error("GCP_VISION_PROJECT environment variable is required")
+		os.Exit(1)
 	}
 
 	server := buildServer(client, gcpVisionProject)
@@ -598,21 +612,56 @@ func main() {
 		addr := ":" + port()
 		token := os.Getenv("MCP_TOKEN")
 		if token == "" {
-			log.Fatal("MCP_TOKEN environment variable is required in HTTP mode")
+			slog.Error("MCP_TOKEN environment variable is required in HTTP mode")
+			os.Exit(1)
 		}
-		log.Printf("freshdesk-mcp HTTP server starting on %s", addr)
+
+		slog.Info("freshdesk-mcp HTTP server starting", "addr", addr)
+
 		handler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 			return server
 		}, nil)
+
 		mux := http.NewServeMux()
 		mux.Handle("/mcp", authMiddleware(token, handler))
-		if err := http.ListenAndServe(addr, mux); err != nil {
-			log.Fatalf("http server error: %v", err)
+		mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"status":"ok"}`))
+		})
+
+		httpServer := &http.Server{
+			Addr:    addr,
+			Handler: mux,
 		}
+
+		// graceful shutdown on SIGTERM/SIGINT
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+		defer stop()
+
+		go func() {
+			if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				slog.Error("http server error", "err", err)
+				os.Exit(1)
+			}
+		}()
+
+		slog.Info("freshdesk-mcp ready")
+		<-ctx.Done()
+
+		slog.Info("shutting down")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			slog.Error("shutdown error", "err", err)
+		}
+		slog.Info("shutdown complete")
+
 	default:
-		log.Println("freshdesk-mcp server starting on stdio")
+		slog.Info("freshdesk-mcp server starting on stdio")
 		if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
-			log.Fatalf("server error: %v", err)
+			slog.Error("server error", "err", err)
+			os.Exit(1)
 		}
 	}
 }
