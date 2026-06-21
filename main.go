@@ -33,16 +33,17 @@ type GetTicketSummaryOutput struct {
 }
 
 type GetTicketOutput struct {
-	ID           int64          `json:"id"`
-	Subject      string         `json:"subject"`
-	Status       int            `json:"status"`
-	Type         string         `json:"type"`
-	Priority     int            `json:"priority"`
-	DueBy        string         `json:"due_by"`
-	IsEscalated  bool           `json:"is_escalated"`
-	CreatedAt    string         `json:"created_at"`
-	Tags         []string       `json:"tags"`
-	CustomFields map[string]any `json:"custom_fields"`
+	ID              int64          `json:"id"`
+	Subject         string         `json:"subject"`
+	Status          int            `json:"status"`
+	Type            string         `json:"type"`
+	Priority        int            `json:"priority"`
+	DueBy           string         `json:"due_by"`
+	IsEscalated     bool           `json:"is_escalated"`
+	CreatedAt       string         `json:"created_at"`
+	Tags            []string       `json:"tags"`
+	CustomFields    map[string]any `json:"custom_fields"`
+	DescriptionText string         `json:"description_text"`
 }
 
 type SearchTicketsInput struct {
@@ -702,15 +703,16 @@ func isImage(name, contentType string) bool {
 
 func ticketToOutput(t *freshdesk.Ticket) GetTicketOutput {
 	return GetTicketOutput{
-		ID:           t.ID,
-		Subject:      t.Subject,
-		Status:       t.Status,
-		Type:         t.Type,
-		Priority:     t.Priority,
-		DueBy:        t.DueBy,
-		IsEscalated:  t.IsEscalated,
-		CreatedAt:    t.CreatedAt,
-		Tags:         t.Tags,
-		CustomFields: t.CustomFields,
+		ID:              t.ID,
+		Subject:         t.Subject,
+		Status:          t.Status,
+		Type:            t.Type,
+		Priority:        t.Priority,
+		DueBy:           t.DueBy,
+		IsEscalated:     t.IsEscalated,
+		CreatedAt:       t.CreatedAt,
+		Tags:            t.Tags,
+		CustomFields:    t.CustomFields,
+		DescriptionText: t.DescriptionText,
 	}
 }

@@ -26,22 +26,23 @@ type Client struct {
 }
 
 type Ticket struct {
-	ID           int64          `json:"id"`
-	Subject      string         `json:"subject"`
-	Status       int            `json:"status"`
-	Type         string         `json:"type"`
-	Priority     int            `json:"priority"`
-	RequesterID  int64          `json:"requester_id"`
-	CompanyID    int64          `json:"company_id"`
-	DueBy        string         `json:"due_by"`
-	FrDueBy      string         `json:"fr_due_by"`
-	IsEscalated  bool           `json:"is_escalated"`
-	FrEscalated  bool           `json:"fr_escalated"`
-	CreatedAt    string         `json:"created_at"`
-	UpdatedAt    string         `json:"updated_at"`
-	Tags         []string       `json:"tags"`
-	CustomFields map[string]any `json:"custom_fields"`
-	Attachments  []Attachment   `json:"attachments"`
+	ID              int64          `json:"id"`
+	Subject         string         `json:"subject"`
+	Status          int            `json:"status"`
+	Type            string         `json:"type"`
+	Priority        int            `json:"priority"`
+	RequesterID     int64          `json:"requester_id"`
+	CompanyID       int64          `json:"company_id"`
+	DueBy           string         `json:"due_by"`
+	FrDueBy         string         `json:"fr_due_by"`
+	IsEscalated     bool           `json:"is_escalated"`
+	FrEscalated     bool           `json:"fr_escalated"`
+	CreatedAt       string         `json:"created_at"`
+	UpdatedAt       string         `json:"updated_at"`
+	Tags            []string       `json:"tags"`
+	CustomFields    map[string]any `json:"custom_fields"`
+	Attachments     []Attachment   `json:"attachments"`
+	DescriptionText string         `json:"description_text"`
 }
 
 type TicketFilter struct {
