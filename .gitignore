@@ -57,3 +57,6 @@ Thumbs.db
 .vscode/
 freshdesk-mcp
 *.bak
+
+# Claude code
+.mcp.json

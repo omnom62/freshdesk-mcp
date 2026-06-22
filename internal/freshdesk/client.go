@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -42,6 +43,7 @@ type Ticket struct {
 	Tags            []string       `json:"tags"`
 	CustomFields    map[string]any `json:"custom_fields"`
 	Attachments     []Attachment   `json:"attachments"`
+	Description     string         `json:"description"`
 	DescriptionText string         `json:"description_text"`
 }
 
@@ -412,4 +414,50 @@ func (c *Client) SearchContacts(ctx context.Context, query string) ([]Contact, e
 	}
 
 	return matches, nil
+}
+
+// ExtractInlineImageURLs parses HTML and returns all inline attachment URLs.
+func ExtractInlineImageURLs(html string) []string {
+	var urls []string
+	// Match <img src="..."> tags
+	re := regexp.MustCompile(`<img[^>]+src="([^"]+)"`)
+	matches := re.FindAllStringSubmatch(html, -1)
+	for _, m := range matches {
+		if len(m) > 1 {
+			urls = append(urls, m[1])
+		}
+	}
+	return urls
+}
+
+// DownloadInlineAttachment downloads an inline Freshdesk attachment URL
+// using API key auth and following redirects.
+func (c *Client) DownloadInlineAttachment(ctx context.Context, url string) ([]byte, error) {
+	if cached, ok := c.attachments.Get(url); ok {
+		return cached, nil
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	req.SetBasicAuth(c.APIKey, "X")
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("download inline attachment: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read body: %w", err)
+	}
+
+	c.attachments.Set(url, data)
+	return data, nil
 }

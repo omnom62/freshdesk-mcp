@@ -181,6 +181,21 @@ type ListTicketsOutput struct {
 	Results []GetTicketOutput `json:"results"`
 }
 
+type GetDescriptionImagesInput struct {
+	TicketID int64 `json:"ticket_id"`
+}
+
+type InlineImageResult struct {
+	URL  string `json:"url"`
+	Text string `json:"text"`
+}
+
+type GetDescriptionImagesOutput struct {
+	TicketID int64               `json:"ticket_id"`
+	Total    int                 `json:"total"`
+	Images   []InlineImageResult `json:"images"`
+}
+
 func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "freshdesk-mcp",
@@ -581,7 +596,49 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 			return nil, ListTicketsOutput{Total: len(results), Results: results}, nil
 		},
 	)
+	mcp.AddTool(server,
+		&mcp.Tool{
+			Name: "get_description_images",
+			Description: `Extract and OCR inline images embedded in a ticket's description HTML body. 
+	Some tickets contain screenshots pasted directly into the description rather than uploaded as file attachments — these are not visible via list_attachments.
+	Use this tool when get_ticket_summary shows a non-empty description but list_attachments finds no images, or when the description mentions a screenshot/table/log.
+	Returns OCR text from each inline image found.`,
+		},
+		func(ctx context.Context, req *mcp.CallToolRequest, input GetDescriptionImagesInput) (*mcp.CallToolResult, GetDescriptionImagesOutput, error) {
+			ticket, err := client.GetTicket(ctx, input.TicketID)
+			if err != nil {
+				return nil, GetDescriptionImagesOutput{}, fmt.Errorf("get ticket: %w", err)
+			}
 
+			urls := freshdesk.ExtractInlineImageURLs(ticket.Description)
+			if len(urls) == 0 {
+				return nil, GetDescriptionImagesOutput{TicketID: input.TicketID, Total: 0}, nil
+			}
+
+			var results []InlineImageResult
+			for _, imgURL := range urls {
+				data, err := client.DownloadInlineAttachment(ctx, imgURL)
+				if err != nil {
+					results = append(results, InlineImageResult{URL: imgURL, Text: fmt.Sprintf("error: %v", err)})
+					continue
+				}
+
+				text, err := extract.ImageOCR(ctx, data, gcpVisionProject)
+				if err != nil {
+					results = append(results, InlineImageResult{URL: imgURL, Text: fmt.Sprintf("ocr error: %v", err)})
+					continue
+				}
+
+				results = append(results, InlineImageResult{URL: imgURL, Text: text})
+			}
+
+			return nil, GetDescriptionImagesOutput{
+				TicketID: input.TicketID,
+				Total:    len(results),
+				Images:   results,
+			}, nil
+		},
+	)
 	return server
 }
 
