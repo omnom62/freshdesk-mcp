@@ -18,6 +18,10 @@ func FromAttachment(ctx context.Context, name, contentType string, data []byte, 
 	case contentType == "text/plain" ||
 		strings.HasSuffix(name, ".txt"):
 		return string(data), nil
+	case contentType == "text/csv" ||
+		contentType == "application/csv" ||
+		strings.HasSuffix(name, ".csv"):
+		return string(data), nil
 	case contentType == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
 		strings.HasSuffix(name, ".xlsx"):
 		return Xlsx(data)

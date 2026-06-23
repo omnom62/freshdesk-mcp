@@ -295,6 +295,7 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 							- .xlsx: Excel spreadsheets → tab-separated rows per sheet
 							- .json: JSON files → pretty printed
 							- .txt: plain text
+							- .csv: CSV files → plain text
 							- .png .jpg .jpeg: screenshots and images → OCR via Google Vision API
 							Use list_attachments first to get the attachment_id. Ideal for reading investigation reports, domain lists, DNS screenshots and phishing page captures.`,
 		},
