@@ -57,6 +57,7 @@ type SearchTicketsInput struct {
 	CreatedBefore string `json:"created_before,omitempty"`
 	RequesterID   int64  `json:"requester_id,omitempty"`
 	CompanyID     int64  `json:"company_id,omitempty"`
+	GroupID       int64  `json:"group_id,omitempty"`
 }
 
 type SearchTicketsOutput struct {
@@ -196,6 +197,12 @@ type GetDescriptionImagesOutput struct {
 	Images   []InlineImageResult `json:"images"`
 }
 
+type ListGroupsOutput struct {
+	Total   int               `json:"total"`
+	Results []freshdesk.Group `json:"results"`
+}
+
+
 func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "freshdesk-mcp",
@@ -248,6 +255,7 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 				CreatedBefore: input.CreatedBefore,
 				RequesterID:   input.RequesterID,
 				CompanyID:     input.CompanyID,
+				GroupID:       input.GroupID,
 			})
 			if err != nil {
 				return nil, SearchTicketsOutput{}, fmt.Errorf("search_tickets: %w", err)
@@ -638,6 +646,26 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 				Total:    len(results),
 				Images:   results,
 			}, nil
+		},
+	)
+	mcp.AddTool(server,
+		&mcp.Tool{
+			Name: "list_groups",
+			Description: `List all Freshdesk agent groups. Returns group id and name.
+							Use this to find the group_id for filtering tickets by team.
+							Example workflow: list_groups → find "Threat Intelligence" id → search_tickets group_id=<id>
+							Known groups: "AU staff" (general), "Threat Intelligence" (phishing/false negatives), "EU Staff"`,
+		},
+		func(ctx context.Context, req *mcp.CallToolRequest, input struct{}) (*mcp.CallToolResult, ListGroupsOutput, error) {
+			groups, err := client.ListGroups(ctx)
+			if err != nil {
+				return nil, ListGroupsOutput{}, fmt.Errorf("list_groups: %w", err)
+			}
+			results := make([]freshdesk.Group, len(groups))
+			for i, g := range groups {
+				results[i] = freshdesk.Group{ID: g.ID, Name: g.Name}
+			}
+			return nil, ListGroupsOutput{Total: len(results), Results: results}, nil
 		},
 	)
 	return server

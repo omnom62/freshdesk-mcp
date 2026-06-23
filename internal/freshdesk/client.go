@@ -34,6 +34,7 @@ type Ticket struct {
 	Priority        int            `json:"priority"`
 	RequesterID     int64          `json:"requester_id"`
 	CompanyID       int64          `json:"company_id"`
+	GroupID         int64          `json:"group_id"`
 	DueBy           string         `json:"due_by"`
 	FrDueBy         string         `json:"fr_due_by"`
 	IsEscalated     bool           `json:"is_escalated"`
@@ -58,6 +59,7 @@ type TicketFilter struct {
 	CreatedBefore string
 	RequesterID   int64
 	CompanyID     int64
+	GroupID       int64
 }
 
 type Conversation struct {
@@ -67,6 +69,25 @@ type Conversation struct {
 	Private     bool         `json:"private"`
 	CreatedAt   string       `json:"created_at"`
 	Attachments []Attachment `json:"attachments"`
+}
+
+type Group struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+}
+
+func (c *Client) ListGroups(ctx context.Context) ([]Group, error) {
+	body, err := c.doRequest(ctx, "GET", "/api/v2/groups")
+	if err != nil {
+		return nil, fmt.Errorf("ListGroups: %w", err)
+	}
+
+	var groups []Group
+	if err := json.Unmarshal(body, &groups); err != nil {
+		return nil, fmt.Errorf("decode groups: %w", err)
+	}
+
+	return groups, nil
 }
 
 func NewClient(baseURL, apiKey string) *Client {
@@ -231,6 +252,9 @@ func (c *Client) SearchTickets(ctx context.Context, filter TicketFilter) ([]Tick
 			continue
 		}
 		if filter.CompanyID != 0 && t.CompanyID != filter.CompanyID {
+			continue
+		}
+		if filter.GroupID != 0 && t.GroupID != filter.GroupID {
 			continue
 		}
 		if filter.CreatedAfter != "" {
