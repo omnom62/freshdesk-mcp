@@ -204,6 +204,14 @@ type ListGroupsOutput struct {
 	Results []freshdesk.Group `json:"results"`
 }
 
+type BatchGetTicketSummariesInput struct {
+	TicketIDs []int64 `json:"ticket_ids"`
+}
+
+type BatchGetTicketSummariesOutput struct {
+	Total   int                      `json:"total"`
+	Results []GetTicketSummaryOutput `json:"results"`
+}
 
 func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{
@@ -255,7 +263,7 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 				IsEscalated:   input.IsEscalated != nil && *input.IsEscalated,
 				CreatedAfter:  input.CreatedAfter,
 				CreatedBefore: input.CreatedBefore,
-			UpdatedSince:  input.UpdatedSince,
+				UpdatedSince:  input.UpdatedSince,
 				RequesterID:   input.RequesterID,
 				CompanyID:     input.CompanyID,
 				GroupID:       input.GroupID,
@@ -595,7 +603,7 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 				Type:          input.Type,
 				CreatedAfter:  input.CreatedAfter,
 				CreatedBefore: input.CreatedBefore,
-			UpdatedSince:  input.UpdatedSince,
+				UpdatedSince:  input.UpdatedSince,
 			})
 			if err != nil {
 				return nil, ListTicketsOutput{}, fmt.Errorf("list_tickets: %w", err)
@@ -613,9 +621,9 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 		&mcp.Tool{
 			Name: "get_description_images",
 			Description: `Extract and OCR inline images embedded in a ticket's description HTML body. 
-	Some tickets contain screenshots pasted directly into the description rather than uploaded as file attachments — these are not visible via list_attachments.
-	Use this tool when get_ticket_summary shows a non-empty description but list_attachments finds no images, or when the description mentions a screenshot/table/log.
-	Returns OCR text from each inline image found.`,
+							Some tickets contain screenshots pasted directly into the description rather than uploaded as file attachments — these are not visible via list_attachments.
+							Use this tool when get_ticket_summary shows a non-empty description but list_attachments finds no images, or when the description mentions a screenshot/table/log.
+							Returns OCR text from each inline image found.`,
 		},
 		func(ctx context.Context, req *mcp.CallToolRequest, input GetDescriptionImagesInput) (*mcp.CallToolResult, GetDescriptionImagesOutput, error) {
 			ticket, err := client.GetTicket(ctx, input.TicketID)
@@ -670,6 +678,119 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 				results[i] = freshdesk.Group{ID: g.ID, Name: g.Name}
 			}
 			return nil, ListGroupsOutput{Total: len(results), Results: results}, nil
+		},
+	)
+	mcp.AddTool(server,
+		&mcp.Tool{
+			Name: "batch_get_ticket_summaries",
+			Description: `Fetch full summaries for multiple tickets in a single call. Each summary includes ticket details, all conversations, and attachment list.
+							Use this instead of calling get_ticket_summary repeatedly — it fetches all tickets in parallel server-side, which is significantly faster.
+							Typical workflow:
+							1. search_tickets or list_tickets → get list of ticket IDs
+							2. batch_get_ticket_summaries with those IDs → get all summaries at once
+							Returns array of summaries in the same format as get_ticket_summary.`,
+		},
+		func(ctx context.Context, req *mcp.CallToolRequest, input BatchGetTicketSummariesInput) (*mcp.CallToolResult, BatchGetTicketSummariesOutput, error) {
+			type result struct {
+				idx     int
+				summary GetTicketSummaryOutput
+				err     error
+			}
+
+			results := make([]GetTicketSummaryOutput, len(input.TicketIDs))
+			ch := make(chan result, len(input.TicketIDs))
+
+			g, gctx := errgroup.WithContext(ctx)
+
+			for i, ticketID := range input.TicketIDs {
+				i, ticketID := i, ticketID
+				g.Go(func() error {
+					var (
+						ticket      *freshdesk.Ticket
+						convs       []freshdesk.Conversation
+						attachments []freshdesk.Attachment
+					)
+
+					inner, innerCtx := errgroup.WithContext(gctx)
+
+					inner.Go(func() error {
+						t, err := client.GetTicket(innerCtx, ticketID)
+						if err != nil {
+							return err
+						}
+						ticket = t
+						return nil
+					})
+
+					inner.Go(func() error {
+						c, err := client.GetConversations(innerCtx, ticketID)
+						if err != nil {
+							return err
+						}
+						convs = c
+						return nil
+					})
+
+					inner.Go(func() error {
+						a, err := client.GetAllAttachments(innerCtx, ticketID)
+						if err != nil {
+							return err
+						}
+						attachments = a
+						return nil
+					})
+
+					if err := inner.Wait(); err != nil {
+						ch <- result{idx: i, err: err}
+						return nil
+					}
+
+					convResults := make([]ConversationOutput, len(convs))
+					for j, c := range convs {
+						convResults[j] = ConversationOutput{
+							ID:        c.ID,
+							BodyText:  c.BodyText,
+							Incoming:  c.Incoming,
+							Private:   c.Private,
+							CreatedAt: c.CreatedAt,
+						}
+					}
+
+					attResults := make([]AttachmentInfo, len(attachments))
+					for j, a := range attachments {
+						attResults[j] = AttachmentInfo{
+							ID:          a.ID,
+							Name:        a.Name,
+							ContentType: a.ContentType,
+							Size:        a.Size,
+						}
+					}
+
+					ch <- result{
+						idx: i,
+						summary: GetTicketSummaryOutput{
+							Ticket:        ticketToOutput(ticket),
+							Conversations: convResults,
+							Attachments:   attResults,
+						},
+					}
+					return nil
+				})
+			}
+
+			g.Wait()
+			close(ch)
+
+			for r := range ch {
+				if r.err == nil {
+					results[r.idx] = r.summary
+				}
+			}
+
+			return nil, BatchGetTicketSummariesOutput{
+				Total:   len(results),
+				Results: results,
+			}, nil
 		},
 	)
 	return server
