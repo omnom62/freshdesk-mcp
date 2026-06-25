@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"io"
 	"math"
 	"net/http"
@@ -59,6 +60,7 @@ type TicketFilter struct {
 	CreatedBefore string
 	RequesterID   int64
 	CompanyID     int64
+	UpdatedSince  string
 	GroupID       int64
 }
 
@@ -186,7 +188,7 @@ func (c *Client) GetTicket(ctx context.Context, id int64) (*Ticket, error) {
 	return &ticket, nil
 }
 
-func (c *Client) ListTickets(ctx context.Context) ([]Ticket, error) {
+func (c *Client) ListTickets(ctx context.Context, updatedSince string) ([]Ticket, error) {
 	const cacheKey = "all"
 
 	if cached, ok := c.tickets.Get(cacheKey); ok {
@@ -197,7 +199,11 @@ func (c *Client) ListTickets(ctx context.Context) ([]Ticket, error) {
 	page := 1
 
 	for {
-		body, err := c.doRequest(ctx, "GET", fmt.Sprintf("/api/v2/tickets?per_page=100&page=%d", page))
+		path := fmt.Sprintf("/api/v2/tickets?per_page=100&page=%d", page)
+		if updatedSince != "" {
+			path += "&updated_since=" + url.QueryEscape(updatedSince)
+		}
+		body, err := c.doRequest(ctx, "GET", path)
 		if err != nil {
 			return nil, fmt.Errorf("ListTickets page %d: %w", page, err)
 		}
@@ -215,12 +221,14 @@ func (c *Client) ListTickets(ctx context.Context) ([]Ticket, error) {
 
 		page++
 	}
-	c.tickets.Set(cacheKey, all)
+	if updatedSince == "" {
+		c.tickets.Set(cacheKey, all)
+	}
 	return all, nil
 }
 
 func (c *Client) SearchTickets(ctx context.Context, filter TicketFilter) ([]Ticket, error) {
-	tickets, err := c.ListTickets(ctx)
+	tickets, err := c.ListTickets(ctx, filter.UpdatedSince)
 	if err != nil {
 		return nil, fmt.Errorf("SearchTickets: %w", err)
 	}

@@ -55,6 +55,7 @@ type SearchTicketsInput struct {
 	IsEscalated   *bool  `json:"is_escalated,omitempty"`
 	CreatedAfter  string `json:"created_after,omitempty"`
 	CreatedBefore string `json:"created_before,omitempty"`
+	UpdatedSince  string `json:"updated_since,omitempty"`
 	RequesterID   int64  `json:"requester_id,omitempty"`
 	CompanyID     int64  `json:"company_id,omitempty"`
 	GroupID       int64  `json:"group_id,omitempty"`
@@ -175,6 +176,7 @@ type ListTicketsInput struct {
 	Type          string `json:"type,omitempty"`
 	CreatedAfter  string `json:"created_after,omitempty"`
 	CreatedBefore string `json:"created_before,omitempty"`
+	UpdatedSince  string `json:"updated_since,omitempty"`
 }
 
 type ListTicketsOutput struct {
@@ -253,6 +255,7 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 				IsEscalated:   input.IsEscalated != nil && *input.IsEscalated,
 				CreatedAfter:  input.CreatedAfter,
 				CreatedBefore: input.CreatedBefore,
+			UpdatedSince:  input.UpdatedSince,
 				RequesterID:   input.RequesterID,
 				CompanyID:     input.CompanyID,
 				GroupID:       input.GroupID,
@@ -592,6 +595,7 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 				Type:          input.Type,
 				CreatedAfter:  input.CreatedAfter,
 				CreatedBefore: input.CreatedBefore,
+			UpdatedSince:  input.UpdatedSince,
 			})
 			if err != nil {
 				return nil, ListTicketsOutput{}, fmt.Errorf("list_tickets: %w", err)
