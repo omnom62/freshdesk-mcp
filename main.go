@@ -38,7 +38,9 @@ type GetTicketOutput struct {
 	Status          int            `json:"status"`
 	Type            string         `json:"type"`
 	Priority        int            `json:"priority"`
+	ResponderID     int64          `json:"responder_id"`
 	DueBy           string         `json:"due_by"`
+	FrDueBy         string         `json:"fr_due_by"`
 	IsEscalated     bool           `json:"is_escalated"`
 	CreatedAt       string         `json:"created_at"`
 	Tags            []string       `json:"tags"`
@@ -59,6 +61,7 @@ type SearchTicketsInput struct {
 	RequesterID   int64  `json:"requester_id,omitempty"`
 	CompanyID     int64  `json:"company_id,omitempty"`
 	GroupID       int64  `json:"group_id,omitempty"`
+	AgentID       int64  `json:"agent_id,omitempty"`
 }
 
 type SearchTicketsOutput struct {
@@ -170,6 +173,21 @@ type FindCompanyOutput struct {
 	Results []CompanyOutput `json:"results"`
 }
 
+type FindAgentInput struct {
+	Query string `json:"query"`
+}
+
+type AgentOutput struct {
+	ID    int64  `json:"id"`
+	Name  string `json:"name"`
+	Email string `json:"email"`
+}
+
+type FindAgentOutput struct {
+	Total   int           `json:"total"`
+	Results []AgentOutput `json:"results"`
+}
+
 type ListTicketsInput struct {
 	Status        int    `json:"status,omitempty"`
 	Priority      int    `json:"priority,omitempty"`
@@ -254,7 +272,7 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 							All tickets from Defence: first call find_company query="Defence", then use company_id`,
 		},
 		func(ctx context.Context, req *mcp.CallToolRequest, input SearchTicketsInput) (*mcp.CallToolResult, SearchTicketsOutput, error) {
-			tickets, err := client.SearchTickets(ctx, freshdesk.TicketFilter{
+			tickets, err := client.SearchTickets(ctx, &freshdesk.TicketFilter{
 				Query:         input.Query,
 				Status:        input.Status,
 				Priority:      input.Priority,
@@ -267,6 +285,7 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 				RequesterID:   input.RequesterID,
 				CompanyID:     input.CompanyID,
 				GroupID:       input.GroupID,
+				AgentID:       input.AgentID,
 			})
 			if err != nil {
 				return nil, SearchTicketsOutput{}, fmt.Errorf("search_tickets: %w", err)
@@ -506,6 +525,28 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 
 	mcp.AddTool(server,
 		&mcp.Tool{
+			Name:        "find_agent",
+			Description: `Search Freshdesk agents by name or email. Returns agent_id which can be passed to search_tickets agent_id to find tickets assigned to that agent.`,
+		},
+		func(ctx context.Context, req *mcp.CallToolRequest, input FindAgentInput) (*mcp.CallToolResult, FindAgentOutput, error) {
+			agents, err := client.SearchAgents(ctx, input.Query)
+			if err != nil {
+				return nil, FindAgentOutput{}, fmt.Errorf("find_agent: %w", err)
+			}
+			results := make([]AgentOutput, len(agents))
+			for i, a := range agents {
+				results[i] = AgentOutput{
+					ID:    a.ID,
+					Name:  a.Contact.Name,
+					Email: a.Contact.Email,
+				}
+			}
+			return nil, FindAgentOutput{Total: len(results), Results: results}, nil
+		},
+	)
+
+	mcp.AddTool(server,
+		&mcp.Tool{
 			Name: "get_ticket_summary",
 			Description: `Retrieve a complete summary of a Freshdesk ticket in one call: ticket details, all conversation replies and notes, and list of attachments.
 	Use this as the first tool when investigating a specific ticket — it gives everything needed to understand the full context without multiple round trips.
@@ -597,7 +638,7 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 	For company or requester filtering use search_tickets instead.`,
 		},
 		func(ctx context.Context, req *mcp.CallToolRequest, input ListTicketsInput) (*mcp.CallToolResult, ListTicketsOutput, error) {
-			tickets, err := client.SearchTickets(ctx, freshdesk.TicketFilter{
+			tickets, err := client.SearchTickets(ctx, &freshdesk.TicketFilter{
 				Status:        input.Status,
 				Priority:      input.Priority,
 				Type:          input.Type,
@@ -919,7 +960,9 @@ func ticketToOutput(t *freshdesk.Ticket) GetTicketOutput {
 		Status:          t.Status,
 		Type:            t.Type,
 		Priority:        t.Priority,
+		ResponderID:     t.ResponderID,
 		DueBy:           t.DueBy,
+		FrDueBy:         t.FrDueBy,
 		IsEscalated:     t.IsEscalated,
 		CreatedAt:       t.CreatedAt,
 		Tags:            t.Tags,

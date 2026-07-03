@@ -4,18 +4,32 @@ package freshdesk
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"net/url"
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
 
-	"github.com/whalebone/freshdesk-mcp/internal/cache"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/time/rate"
+	"github.com/whalebone/freshdesk-mcp/internal/cache"
+)
+
+var (
+	ErrRateLimited = errors.New("HTTP 429: rate limited")
+	ErrHTTPError   = errors.New("HTTP error")
+)
+
+const (
+	httpStatusOKMin = 200
+	httpStatusOKMax = 300
+	pageSize        = 100
+	statusResolved  = 4
+	methodGET       = "GET"
 )
 
 type Client struct {
@@ -36,6 +50,7 @@ type Ticket struct {
 	RequesterID     int64          `json:"requester_id"`
 	CompanyID       int64          `json:"company_id"`
 	GroupID         int64          `json:"group_id"`
+	ResponderID     int64          `json:"responder_id"`
 	DueBy           string         `json:"due_by"`
 	FrDueBy         string         `json:"fr_due_by"`
 	IsEscalated     bool           `json:"is_escalated"`
@@ -62,6 +77,7 @@ type TicketFilter struct {
 	CompanyID     int64
 	UpdatedSince  string
 	GroupID       int64
+	AgentID       int64
 }
 
 type Conversation struct {
@@ -79,7 +95,7 @@ type Group struct {
 }
 
 func (c *Client) ListGroups(ctx context.Context) ([]Group, error) {
-	body, err := c.doRequest(ctx, "GET", "/api/v2/groups")
+	body, err := c.doRequest(ctx, "/api/v2/groups")
 	if err != nil {
 		return nil, fmt.Errorf("ListGroups: %w", err)
 	}
@@ -124,7 +140,18 @@ type Company struct {
 	Domains []string `json:"domains"`
 }
 
-func (c *Client) doRequest(ctx context.Context, method, path string) ([]byte, error) {
+type Agent struct {
+	ID      int64        `json:"id"`
+	Contact AgentContact `json:"contact"`
+}
+
+type AgentContact struct {
+	Name  string `json:"name"`
+	Email string `json:"email"`
+}
+
+//nolint:cyclop
+func (c *Client) doRequest(ctx context.Context, path string) ([]byte, error) {
 	if err := c.limiter.Wait(ctx); err != nil {
 		return nil, fmt.Errorf("rate limiter: %w", err)
 	}
@@ -134,7 +161,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string) ([]byte, er
 	var lastErr error
 
 	for attempt := range maxRetries {
-		req, err := http.NewRequestWithContext(ctx, method, rawURL, nil)
+		req, err := http.NewRequestWithContext(ctx, methodGET, rawURL, nil)
 		if err != nil {
 			return nil, fmt.Errorf("build request: %w", err)
 		}
@@ -155,7 +182,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string) ([]byte, er
 
 		if resp.StatusCode == http.StatusTooManyRequests {
 			wait := time.Duration(math.Pow(2, float64(attempt))) * time.Second
-			lastErr = fmt.Errorf("HTTP 429: rate limited")
+			lastErr = ErrRateLimited
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
@@ -164,8 +191,8 @@ func (c *Client) doRequest(ctx context.Context, method, path string) ([]byte, er
 			}
 		}
 
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+		if resp.StatusCode < httpStatusOKMin || resp.StatusCode >= httpStatusOKMax {
+			return nil, fmt.Errorf("%w: %d: %s", ErrHTTPError, resp.StatusCode, string(body))
 		}
 
 		return body, nil
@@ -175,7 +202,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string) ([]byte, er
 }
 
 func (c *Client) GetTicket(ctx context.Context, id int64) (*Ticket, error) {
-	body, err := c.doRequest(ctx, "GET", fmt.Sprintf("/api/v2/tickets/%d", id))
+	body, err := c.doRequest(ctx, fmt.Sprintf("/api/v2/tickets/%d", id))
 	if err != nil {
 		return nil, fmt.Errorf("GetTicket(%d): %w", id, err)
 	}
@@ -191,8 +218,10 @@ func (c *Client) GetTicket(ctx context.Context, id int64) (*Ticket, error) {
 func (c *Client) ListTickets(ctx context.Context, updatedSince string) ([]Ticket, error) {
 	const cacheKey = "all"
 
-	if cached, ok := c.tickets.Get(cacheKey); ok {
-		return cached, nil
+	if updatedSince == "" {
+		if cached, ok := c.tickets.Get(cacheKey); ok {
+			return cached, nil
+		}
 	}
 
 	var all []Ticket
@@ -200,10 +229,12 @@ func (c *Client) ListTickets(ctx context.Context, updatedSince string) ([]Ticket
 
 	for {
 		path := fmt.Sprintf("/api/v2/tickets?per_page=100&page=%d", page)
-		if updatedSince != "" {
-			path += "&updated_since=" + url.QueryEscape(updatedSince)
+		since := updatedSince
+		if since == "" {
+			since = "2000-01-01T00:00:00Z"
 		}
-		body, err := c.doRequest(ctx, "GET", path)
+		path += "&updated_since=" + url.QueryEscape(since)
+		body, err := c.doRequest(ctx, path)
 		if err != nil {
 			return nil, fmt.Errorf("ListTickets page %d: %w", page, err)
 		}
@@ -215,7 +246,7 @@ func (c *Client) ListTickets(ctx context.Context, updatedSince string) ([]Ticket
 
 		all = append(all, tickets...)
 
-		if len(tickets) < 100 {
+		if len(tickets) < pageSize {
 			break
 		}
 
@@ -227,98 +258,46 @@ func (c *Client) ListTickets(ctx context.Context, updatedSince string) ([]Ticket
 	return all, nil
 }
 
-func (c *Client) SearchTickets(ctx context.Context, filter TicketFilter) ([]Ticket, error) {
+func (c *Client) SearchTickets(ctx context.Context, filter *TicketFilter) ([]Ticket, error) {
 	tickets, err := c.ListTickets(ctx, filter.UpdatedSince)
 	if err != nil {
 		return nil, fmt.Errorf("SearchTickets: %w", err)
 	}
 
-	now := time.Now().UTC()
-	var matches []Ticket
-
-	for _, t := range tickets {
-		if filter.Query != "" {
-			q := strings.ToLower(filter.Query)
-			if !strings.Contains(strings.ToLower(t.Subject), q) &&
-				!strings.Contains(strings.ToLower(t.Type), q) {
-				continue
-			}
-		}
-		if filter.Status != 0 && t.Status != filter.Status {
-			continue
-		}
-		if filter.Priority != 0 && t.Priority != filter.Priority {
-			continue
-		}
-		if filter.Type != "" && !strings.EqualFold(t.Type, filter.Type) {
-			continue
-		}
-		if filter.IsEscalated && !t.IsEscalated {
-			continue
-		}
-		if filter.RequesterID != 0 && t.RequesterID != filter.RequesterID {
-			continue
-		}
-		if filter.CompanyID != 0 && t.CompanyID != filter.CompanyID {
-			continue
-		}
-		if filter.GroupID != 0 && t.GroupID != filter.GroupID {
-			continue
-		}
-		if filter.CreatedAfter != "" {
-			after, err := time.Parse(time.RFC3339, filter.CreatedAfter)
-			if err == nil {
-				created, err := time.Parse(time.RFC3339, t.CreatedAt)
-				if err == nil && created.Before(after) {
-					continue
-				}
-			}
-		}
-		if filter.CreatedBefore != "" {
-			before, err := time.Parse(time.RFC3339, filter.CreatedBefore)
-			if err == nil {
-				created, err := time.Parse(time.RFC3339, t.CreatedAt)
-				if err == nil && created.After(before) {
-					continue
-				}
-			}
-		}
-		if filter.Overdue {
-			if t.DueBy == "" || t.Status >= 4 {
-				continue
-			}
-			dueBy, err := time.Parse(time.RFC3339, t.DueBy)
-			if err != nil || !now.After(dueBy) {
-				continue
-			}
-		}
-
-		matches = append(matches, t)
-	}
+	matches := filterTickets(tickets, filter)
 
 	return matches, nil
 }
 
 func (c *Client) GetConversations(ctx context.Context, ticketID int64) ([]Conversation, error) {
-	body, err := c.doRequest(ctx, "GET", fmt.Sprintf("/api/v2/tickets/%d/conversations", ticketID))
-	if err != nil {
-		return nil, fmt.Errorf("GetConversations(%d): %w", ticketID, err)
+	var all []Conversation
+	page := 1
+	for {
+		body, err := c.doRequest(
+			ctx,
+			fmt.Sprintf("/api/v2/tickets/%d/conversations?per_page=100&page=%d", ticketID, page),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("GetConversations(%d) page %d: %w", ticketID, page, err)
+		}
+		var convs []Conversation
+		if err := json.Unmarshal(body, &convs); err != nil {
+			return nil, fmt.Errorf("decode conversations page %d: %w\nraw: %s", page, err, string(body))
+		}
+		all = append(all, convs...)
+		if len(convs) < pageSize {
+			break
+		}
+		page++
 	}
-
-	var convs []Conversation
-	if err := json.Unmarshal(body, &convs); err != nil {
-		return nil, fmt.Errorf("decode conversations: %w\nraw: %s", err, string(body))
-	}
-
-	return convs, nil
+	return all, nil
 }
-
 func (c *Client) DownloadAttachment(ctx context.Context, url string) ([]byte, error) {
 	if cached, ok := c.attachments.Get(url); ok {
 		return cached, nil
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, methodGET, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
@@ -329,8 +308,8 @@ func (c *Client) DownloadAttachment(ctx context.Context, url string) ([]byte, er
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	if resp.StatusCode < httpStatusOKMin || resp.StatusCode >= httpStatusOKMax {
+		return nil, fmt.Errorf("%w: %d", ErrHTTPError, resp.StatusCode)
 	}
 
 	data, err := io.ReadAll(resp.Body)
@@ -374,7 +353,13 @@ func (c *Client) GetAllAttachments(ctx context.Context, ticketID int64) ([]Attac
 		return nil, fmt.Errorf("GetAllAttachments(%d): %w", ticketID, err)
 	}
 
-	return append(ticketAtts, convAtts...), nil
+	var result []Attachment
+	for _, a := range append(ticketAtts, convAtts...) {
+		if a.ID != 0 && a.URL != "" {
+			result = append(result, a)
+		}
+	}
+	return result, nil
 }
 
 func (c *Client) SearchCompanies(ctx context.Context, query string) ([]Company, error) {
@@ -382,7 +367,10 @@ func (c *Client) SearchCompanies(ctx context.Context, query string) ([]Company, 
 	page := 1
 
 	for {
-		body, err := c.doRequest(ctx, "GET", fmt.Sprintf("/api/v2/companies?per_page=100&page=%d", page))
+		body, err := c.doRequest(
+			ctx,
+			fmt.Sprintf("/api/v2/companies?per_page=100&page=%d", page),
+		)
 		if err != nil {
 			return nil, fmt.Errorf("SearchCompanies page %d: %w", page, err)
 		}
@@ -394,7 +382,7 @@ func (c *Client) SearchCompanies(ctx context.Context, query string) ([]Company, 
 
 		all = append(all, companies...)
 
-		if len(companies) < 100 {
+		if len(companies) < pageSize {
 			break
 		}
 		page++
@@ -417,7 +405,10 @@ func (c *Client) SearchContacts(ctx context.Context, query string) ([]Contact, e
 	page := 1
 
 	for {
-		body, err := c.doRequest(ctx, "GET", fmt.Sprintf("/api/v2/contacts?per_page=100&page=%d", page))
+		body, err := c.doRequest(
+			ctx,
+			fmt.Sprintf("/api/v2/contacts?per_page=100&page=%d", page),
+		)
 		if err != nil {
 			return nil, fmt.Errorf("SearchContacts page %d: %w", page, err)
 		}
@@ -429,7 +420,7 @@ func (c *Client) SearchContacts(ctx context.Context, query string) ([]Contact, e
 
 		all = append(all, contacts...)
 
-		if len(contacts) < 100 {
+		if len(contacts) < pageSize {
 			break
 		}
 		page++
@@ -442,6 +433,45 @@ func (c *Client) SearchContacts(ctx context.Context, query string) ([]Contact, e
 		if strings.Contains(strings.ToLower(co.Name), q) ||
 			strings.Contains(strings.ToLower(co.Email), q) {
 			matches = append(matches, co)
+		}
+	}
+
+	return matches, nil
+}
+
+func (c *Client) SearchAgents(ctx context.Context, query string) ([]Agent, error) {
+	var all []Agent
+	page := 1
+
+	for {
+		body, err := c.doRequest(
+			ctx,
+			fmt.Sprintf("/api/v2/agents?per_page=100&page=%d", page),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("SearchAgents page %d: %w", page, err)
+		}
+
+		var agents []Agent
+		if err := json.Unmarshal(body, &agents); err != nil {
+			return nil, fmt.Errorf("decode agents: %w\nraw: %s", err, string(body))
+		}
+
+		all = append(all, agents...)
+
+		if len(agents) < pageSize {
+			break
+		}
+		page++
+	}
+
+	// client-side filter by name or email
+	q := strings.ToLower(query)
+	var matches []Agent
+	for _, a := range all {
+		if strings.Contains(strings.ToLower(a.Contact.Name), q) ||
+			strings.Contains(strings.ToLower(a.Contact.Email), q) {
+			matches = append(matches, a)
 		}
 	}
 
@@ -469,7 +499,7 @@ func (c *Client) DownloadInlineAttachment(ctx context.Context, url string) ([]by
 		return cached, nil
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, methodGET, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
@@ -481,8 +511,8 @@ func (c *Client) DownloadInlineAttachment(ctx context.Context, url string) ([]by
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	if resp.StatusCode < httpStatusOKMin || resp.StatusCode >= httpStatusOKMax {
+		return nil, fmt.Errorf("%w: %d", ErrHTTPError, resp.StatusCode)
 	}
 
 	data, err := io.ReadAll(resp.Body)
