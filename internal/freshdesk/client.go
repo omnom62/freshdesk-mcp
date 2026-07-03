@@ -82,6 +82,7 @@ type TicketFilter struct {
 
 type Conversation struct {
 	ID          int64        `json:"id"`
+	Body        string       `json:"body"`
 	BodyText    string       `json:"body_text"`
 	Incoming    bool         `json:"incoming"`
 	Private     bool         `json:"private"`

@@ -673,10 +673,18 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 			}
 
 			urls := freshdesk.ExtractInlineImageURLs(ticket.Description)
+
+			// also extract inline images from conversation bodies
+			convs, err := client.GetConversations(ctx, input.TicketID)
+			if err == nil {
+				for _, conv := range convs {
+					urls = append(urls, freshdesk.ExtractInlineImageURLs(conv.Body)...)
+				}
+			}
+
 			if len(urls) == 0 {
 				return nil, GetDescriptionImagesOutput{TicketID: input.TicketID, Total: 0}, nil
 			}
-
 			var results []InlineImageResult
 			for _, imgURL := range urls {
 				data, err := client.DownloadInlineAttachment(ctx, imgURL)
