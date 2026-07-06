@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/whalebone/freshdesk-mcp/internal/extract"
-	"github.com/whalebone/freshdesk-mcp/internal/freshdesk"
+	"github.com/omnom62/freshdesk-mcp/internal/extract"
+	"github.com/omnom62/freshdesk-mcp/internal/freshdesk"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -52,9 +52,9 @@ type SearchTicketsInput struct {
 	Query         string `json:"query,omitempty"`
 	Status        int    `json:"status,omitempty"`
 	Priority      int    `json:"priority,omitempty"`
-	Overdue       *bool  `json:"overdue,omitempty"`
+	Overdue       bool   `json:"overdue,omitempty"`
 	Type          string `json:"type,omitempty"`
-	IsEscalated   *bool  `json:"is_escalated,omitempty"`
+	IsEscalated   bool   `json:"is_escalated,omitempty"`
 	CreatedAfter  string `json:"created_after,omitempty"`
 	CreatedBefore string `json:"created_before,omitempty"`
 	UpdatedSince  string `json:"updated_since,omitempty"`
@@ -276,9 +276,9 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 				Query:         input.Query,
 				Status:        input.Status,
 				Priority:      input.Priority,
-				Overdue:       input.Overdue != nil && *input.Overdue,
+				Overdue:       input.Overdue,
 				Type:          input.Type,
-				IsEscalated:   input.IsEscalated != nil && *input.IsEscalated,
+				IsEscalated:   input.IsEscalated,
 				CreatedAfter:  input.CreatedAfter,
 				CreatedBefore: input.CreatedBefore,
 				UpdatedSince:  input.UpdatedSince,
@@ -757,7 +757,6 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 					var (
 						ticket      *freshdesk.Ticket
 						convs       []freshdesk.Conversation
-						attachments []freshdesk.Attachment
 					)
 
 					inner, innerCtx := errgroup.WithContext(gctx)
@@ -780,18 +779,27 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 						return nil
 					})
 
-					inner.Go(func() error {
-						a, err := client.GetAllAttachments(innerCtx, ticketID)
-						if err != nil {
-							return err
-						}
-						attachments = a
-						return nil
-					})
 
 					if err := inner.Wait(); err != nil {
 						ch <- result{idx: i, err: err}
 						return nil
+					}
+
+					// derive attachments from already-fetched ticket and conversations
+					// derive attachments from already-fetched ticket and conversations
+					attachments := append(ticket.Attachments, func() []freshdesk.Attachment {
+						var ca []freshdesk.Attachment
+						for _, conv := range convs {
+							ca = append(ca, conv.Attachments...)
+						}
+						return ca
+					}()...)
+					// filter out scanning placeholders
+					var validAttachments []freshdesk.Attachment
+					for _, a := range attachments {
+						if a.ID != 0 && a.URL != "" {
+							validAttachments = append(validAttachments, a)
+						}
 					}
 
 					convResults := make([]ConversationOutput, len(convs))
@@ -805,8 +813,8 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 						}
 					}
 
-					attResults := make([]AttachmentInfo, len(attachments))
-					for j, a := range attachments {
+					attResults := make([]AttachmentInfo, len(validAttachments))
+					for j, a := range validAttachments {
 						attResults[j] = AttachmentInfo{
 							ID:          a.ID,
 							Name:        a.Name,

@@ -16,7 +16,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/time/rate"
-	"github.com/whalebone/freshdesk-mcp/internal/cache"
+	"github.com/omnom62/freshdesk-mcp/internal/cache"
 )
 
 var (

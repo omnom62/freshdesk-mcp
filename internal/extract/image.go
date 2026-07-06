@@ -33,9 +33,15 @@ func ImageOCR(ctx context.Context, data []byte, gcpProject string) (string, erro
 		return "", fmt.Errorf("annotate image: %w", err)
 	}
 
-	if len(resp.Responses) == 0 || resp.Responses[0].FullTextAnnotation == nil {
+	if len(resp.Responses) == 0 {
 		return "", nil
 	}
-
-	return resp.Responses[0].FullTextAnnotation.Text, nil
+	r := resp.Responses[0]
+	if r.Error != nil && r.Error.Code != 0 {
+		return "", fmt.Errorf("vision: %s", r.Error.Message)
+	}
+	if r.FullTextAnnotation == nil {
+		return "", nil
+	}
+	return r.FullTextAnnotation.Text, nil
 }

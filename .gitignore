@@ -60,3 +60,4 @@ freshdesk-mcp
 
 # Claude code
 .mcp.json
+deploy.sh

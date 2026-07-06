@@ -1,4 +1,4 @@
-module github.com/whalebone/freshdesk-mcp
+module github.com/omnom62/freshdesk-mcp
 
 go 1.26.3
 
