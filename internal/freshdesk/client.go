@@ -39,6 +39,7 @@ type Client struct {
 	tickets     *cache.Cache[string, []Ticket]
 	attachments *cache.Cache[string, []byte]
 	limiter     *rate.Limiter
+	statusMap   *cache.Cache[string, map[int]string]
 }
 
 type Ticket struct {
@@ -117,6 +118,7 @@ func NewClient(baseURL, apiKey string) *Client {
 		tickets:     cache.New[string, []Ticket](5 * time.Minute),
 		attachments: cache.New[string, []byte](10 * time.Minute),
 		limiter:     rate.NewLimiter(rate.Every(time.Minute/40), 1),
+		statusMap:   cache.New[string, map[int]string](60 * time.Minute),
 	}
 }
 
@@ -523,4 +525,45 @@ func (c *Client) DownloadInlineAttachment(ctx context.Context, url string) ([]by
 
 	c.attachments.Set(url, data)
 	return data, nil
+}
+
+// GetStatusMap returns a map of status ID to status name fetched from Freshdesk ticket fields.
+// Result is cached for 60 minutes.
+func (c *Client) GetStatusMap(ctx context.Context) (map[int]string, error) {
+	const cacheKey = "status"
+	if cached, ok := c.statusMap.Get(cacheKey); ok {
+		return cached, nil
+	}
+
+	body, err := c.doRequest(ctx, "/api/v2/ticket_fields")
+	if err != nil {
+		return nil, fmt.Errorf("GetStatusMap: %w", err)
+	}
+
+	var fields []struct {
+		Name    string              `json:"name"`
+		Choices map[string][]string `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &fields); err != nil {
+		return nil, fmt.Errorf("decode ticket fields: %w\nraw: %s", err, string(body))
+	}
+
+	statusMap := make(map[int]string)
+	for _, f := range fields {
+		if f.Name != "status" {
+			continue
+		}
+		for k, v := range f.Choices {
+			var id int
+			if _, err := fmt.Sscanf(k, "%d", &id); err != nil {
+				continue
+			}
+			if len(v) > 0 {
+				statusMap[id] = v[0]
+			}
+		}
+	}
+
+	c.statusMap.Set(cacheKey, statusMap)
+	return statusMap, nil
 }

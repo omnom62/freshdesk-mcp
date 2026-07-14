@@ -36,6 +36,10 @@ type GetTicketOutput struct {
 	ID              int64          `json:"id"`
 	Subject         string         `json:"subject"`
 	Status          int            `json:"status"`
+	StatusName      string         `json:"status_name,omitempty"`
+	GroupID         int64          `json:"group_id,omitempty"`
+	GroupName       string         `json:"group_name,omitempty"`
+	CompanyID       int64          `json:"company_id,omitempty"`
 	Type            string         `json:"type"`
 	Priority        int            `json:"priority"`
 	ResponderID     int64          `json:"responder_id"`
@@ -232,6 +236,19 @@ type BatchGetTicketSummariesOutput struct {
 }
 
 func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server {
+	// build dynamic group description and lookup map
+	groupDesc := ""
+	groupMap := make(map[int64]string)
+	if groups, err := client.ListGroups(context.Background()); err == nil {
+		for i, g := range groups {
+			if i > 0 {
+				groupDesc += ", "
+			}
+			groupDesc += fmt.Sprintf("\"%s\" (id=%d)", g.Name, g.ID)
+			groupMap[g.ID] = g.Name
+		}
+	}
+
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "freshdesk-mcp",
 		Version: "v0.1.0",
@@ -247,7 +264,8 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 			if err != nil {
 				return nil, GetTicketOutput{}, fmt.Errorf("get_ticket: %w", err)
 			}
-			return nil, ticketToOutput(ticket), nil
+			sm, _ := client.GetStatusMap(ctx)
+			return nil, ticketToOutput(ticket, sm, groupMap), nil
 		},
 	)
 
@@ -292,7 +310,8 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 			}
 			results := make([]GetTicketOutput, len(tickets))
 			for i, t := range tickets {
-				results[i] = ticketToOutput(&t)
+				sm, _ := client.GetStatusMap(ctx)
+				results[i] = ticketToOutput(&t, sm, groupMap)
 			}
 			return nil, SearchTicketsOutput{Total: len(results), Results: results}, nil
 		},
@@ -617,8 +636,9 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 				}
 			}
 
+			sm, _ := client.GetStatusMap(ctx)
 			return nil, GetTicketSummaryOutput{
-				Ticket:        ticketToOutput(ticket),
+				Ticket:        ticketToOutput(ticket, sm, groupMap),
 				Conversations: convResults,
 				Attachments:   attResults,
 			}, nil
@@ -652,7 +672,8 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 
 			results := make([]GetTicketOutput, len(tickets))
 			for i, t := range tickets {
-				results[i] = ticketToOutput(&t)
+				sm, _ := client.GetStatusMap(ctx)
+				results[i] = ticketToOutput(&t, sm, groupMap)
 			}
 
 			return nil, ListTicketsOutput{Total: len(results), Results: results}, nil
@@ -715,7 +736,7 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 			Description: `List all Freshdesk agent groups. Returns group id and name.
 							Use this to find the group_id for filtering tickets by team.
 							Example workflow: list_groups → find "Threat Intelligence" id → search_tickets group_id=<id>
-							Known groups: "AU staff" (general), "Threat Intelligence" (phishing/false negatives), "EU Staff"`,
+							Known groups: ` + groupDesc + ``,
 		},
 		func(ctx context.Context, req *mcp.CallToolRequest, input struct{}) (*mcp.CallToolResult, ListGroupsOutput, error) {
 			groups, err := client.ListGroups(ctx)
@@ -823,10 +844,11 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 						}
 					}
 
+					sm, _ := client.GetStatusMap(ctx)
 					ch <- result{
 						idx: i,
 						summary: GetTicketSummaryOutput{
-							Ticket:        ticketToOutput(ticket),
+							Ticket:        ticketToOutput(ticket, sm, groupMap),
 							Conversations: convResults,
 							Attachments:   attResults,
 						},
@@ -969,11 +991,15 @@ func isImage(name, contentType string) bool {
 	return false
 }
 
-func ticketToOutput(t *freshdesk.Ticket) GetTicketOutput {
+func ticketToOutput(t *freshdesk.Ticket, statusMap map[int]string, groupMap map[int64]string) GetTicketOutput {
 	return GetTicketOutput{
 		ID:              t.ID,
 		Subject:         t.Subject,
 		Status:          t.Status,
+		StatusName:      statusMap[t.Status],
+		GroupID:         t.GroupID,
+		GroupName:       groupMap[t.GroupID],
+		CompanyID:       t.CompanyID,
 		Type:            t.Type,
 		Priority:        t.Priority,
 		ResponderID:     t.ResponderID,
