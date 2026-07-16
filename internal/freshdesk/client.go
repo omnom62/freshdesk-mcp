@@ -541,8 +541,8 @@ func (c *Client) GetStatusMap(ctx context.Context) (map[int]string, error) {
 	}
 
 	var fields []struct {
-		Name    string              `json:"name"`
-		Choices map[string][]string `json:"choices"`
+		Name    string          `json:"name"`
+		Choices json.RawMessage `json:"choices"`
 	}
 	if err := json.Unmarshal(body, &fields); err != nil {
 		return nil, fmt.Errorf("decode ticket fields: %w\nraw: %s", err, string(body))
@@ -553,7 +553,11 @@ func (c *Client) GetStatusMap(ctx context.Context) (map[int]string, error) {
 		if f.Name != "status" {
 			continue
 		}
-		for k, v := range f.Choices {
+		var choices map[string][]string
+		if err := json.Unmarshal(f.Choices, &choices); err != nil {
+			continue
+		}
+		for k, v := range choices {
 			var id int
 			if _, err := fmt.Sscanf(k, "%d", &id); err != nil {
 				continue
