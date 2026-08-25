@@ -911,7 +911,7 @@ func main() {
 
 		handler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 			return server
-		}, nil)
+		}, &mcp.StreamableHTTPOptions{Stateless: true})
 
 		mux := http.NewServeMux()
 		mux.Handle("/mcp", authMiddleware(token, handler))
