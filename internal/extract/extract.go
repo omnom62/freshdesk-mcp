@@ -1,10 +1,14 @@
 package extract
 
+
 import (
+	"errors"
 	"context"
 	"fmt"
 	"strings"
 )
+
+var ErrUnsupportedType = errors.New("unsupported attachment type")
 
 // FromAttachment routes to the correct extractor based on content type and filename.
 func FromAttachment(ctx context.Context, name, contentType string, data []byte, gcpProject string) (string, error) {
@@ -33,6 +37,6 @@ func FromAttachment(ctx context.Context, name, contentType string, data []byte, 
 		strings.HasSuffix(name, ".jpeg"):
 		return ImageOCR(ctx, data, gcpProject)
 	default:
-		return "", fmt.Errorf("unsupported attachment type: %s (%s)", name, contentType)
+		return "", fmt.Errorf("%w: %s (%s)", ErrUnsupportedType, name, contentType)
 	}
 }

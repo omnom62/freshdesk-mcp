@@ -1,6 +1,8 @@
 package extract
 
+
 import (
+	"errors"
 	"archive/zip"
 	"bytes"
 	"encoding/xml"
@@ -8,6 +10,8 @@ import (
 	"io"
 	"strings"
 )
+
+var ErrDocxMissingDocument = errors.New("word/document.xml not found in docx")
 
 // Docx extracts plain text from a .docx file bytes.
 func Docx(data []byte) (string, error) {
@@ -29,7 +33,7 @@ func Docx(data []byte) (string, error) {
 		return extractXMLText(rc)
 	}
 
-	return "", fmt.Errorf("word/document.xml not found in docx")
+	return "", ErrDocxMissingDocument
 }
 
 func extractXMLText(r io.Reader) (string, error) {
