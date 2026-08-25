@@ -1,11 +1,10 @@
 package extract
 
-
 import (
-	"errors"
 	"archive/zip"
 	"bytes"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -42,7 +41,7 @@ func extractXMLText(r io.Reader) (string, error) {
 
 	for {
 		tok, err := dec.Token()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {

@@ -29,7 +29,7 @@ func Xlsx(data []byte) (string, error) {
 			continue
 		}
 
-		sb.WriteString(fmt.Sprintf("=== Sheet: %s ===\n", sheet))
+		fmt.Fprintf(&sb, "=== Sheet: %s ===\n", sheet)
 
 		for _, row := range rows {
 			sb.WriteString(strings.Join(row, "\t"))

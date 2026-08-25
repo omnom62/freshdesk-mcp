@@ -1,9 +1,8 @@
 package extract
 
-
 import (
-	"errors"
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -11,6 +10,8 @@ import (
 var ErrUnsupportedType = errors.New("unsupported attachment type")
 
 // FromAttachment routes to the correct extractor based on content type and filename.
+//
+//nolint:cyclop
 func FromAttachment(ctx context.Context, name, contentType string, data []byte, gcpProject string) (string, error) {
 	switch {
 	case contentType == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||

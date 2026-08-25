@@ -14,9 +14,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/omnom62/freshdesk-mcp/internal/cache"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/time/rate"
-	"github.com/omnom62/freshdesk-mcp/internal/cache"
 )
 
 var (

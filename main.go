@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -235,6 +236,11 @@ type BatchGetTicketSummariesOutput struct {
 	Results []GetTicketSummaryOutput `json:"results"`
 }
 
+var (
+	ErrAttachmentNotFound = errors.New("attachment not found")
+)
+
+//nolint:gocognit,cyclop
 func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server {
 	// build dynamic group description and lookup map
 	groupDesc := ""
@@ -254,12 +260,15 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 		Version: "v0.1.0",
 	}, nil)
 
-	mcp.AddTool(server,
+	mcp.AddTool(
+		server,
 		&mcp.Tool{
-			Name:        "get_ticket",
-			Description: "Retrieve a single Freshdesk support ticket by its numeric ID. Returns full details including id, subject, status, type, priority, due_by, is_escalated, created_at, tags and custom_fields (cf_impact, cf_urgency, cf_category, cf_subcategory, cf_domain).",
+			Name: "get_ticket",
+			Description: "Retrieve a single Freshdesk support ticket by its numeric ID. Returns full details " +
+				"including id, subject, status, type, priority, due_by, is_escalated, created_at, tags and " +
+				"custom_fields (cf_impact, cf_urgency, cf_category, cf_subcategory, cf_domain).",
 		},
-		func(ctx context.Context, req *mcp.CallToolRequest, input GetTicketInput) (*mcp.CallToolResult, GetTicketOutput, error) {
+		func(ctx context.Context, _ *mcp.CallToolRequest, input GetTicketInput) (*mcp.CallToolResult, GetTicketOutput, error) {
 			ticket, err := client.GetTicket(ctx, input.TicketID)
 			if err != nil {
 				return nil, GetTicketOutput{}, fmt.Errorf("get_ticket: %w", err)
@@ -269,7 +278,8 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 		},
 	)
 
-	mcp.AddTool(server,
+	mcp.AddTool(
+		server,
 		&mcp.Tool{
 			Name: "search_tickets",
 			Description: `Search and filter Freshdesk tickets. All fields are optional.
@@ -289,7 +299,7 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 							High priority open: {"status": 2, "priority": 3}
 							All tickets from Defence: first call find_company query="Defence", then use company_id`,
 		},
-		func(ctx context.Context, req *mcp.CallToolRequest, input SearchTicketsInput) (*mcp.CallToolResult, SearchTicketsOutput, error) {
+		func(ctx context.Context, _ *mcp.CallToolRequest, input SearchTicketsInput) (*mcp.CallToolResult, SearchTicketsOutput, error) {
 			tickets, err := client.SearchTickets(ctx, &freshdesk.TicketFilter{
 				Query:         input.Query,
 				Status:        input.Status,
@@ -309,20 +319,21 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 				return nil, SearchTicketsOutput{}, fmt.Errorf("search_tickets: %w", err)
 			}
 			results := make([]GetTicketOutput, len(tickets))
-			for i, t := range tickets {
+			for i := range tickets {
 				sm, _ := client.GetStatusMap(ctx)
-				results[i] = ticketToOutput(&t, sm, groupMap)
+				results[i] = ticketToOutput(&tickets[i], sm, groupMap)
 			}
 			return nil, SearchTicketsOutput{Total: len(results), Results: results}, nil
 		},
 	)
 
-	mcp.AddTool(server,
+	mcp.AddTool(
+		server,
 		&mcp.Tool{
 			Name:        "get_conversations",
 			Description: "Get all replies, notes and email threads for a Freshdesk ticket. Returns body_text (plain text, HTML stripped), incoming=true means customer sent it, incoming=false means agent sent it. Use this to understand the full investigation history, analyst notes, and customer communications.",
 		},
-		func(ctx context.Context, req *mcp.CallToolRequest, input GetConversationsInput) (*mcp.CallToolResult, GetConversationsOutput, error) {
+		func(ctx context.Context, _ *mcp.CallToolRequest, input GetConversationsInput) (*mcp.CallToolResult, GetConversationsOutput, error) {
 			convs, err := client.GetConversations(ctx, input.TicketID)
 			if err != nil {
 				return nil, GetConversationsOutput{}, fmt.Errorf("get_conversations: %w", err)
@@ -344,7 +355,8 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 		},
 	)
 
-	mcp.AddTool(server,
+	mcp.AddTool(
+		server,
 		&mcp.Tool{
 			Name: "get_attachment_text",
 			Description: `Extract text from a Freshdesk ticket attachment. Supported formats:
@@ -356,7 +368,7 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 							- .png .jpg .jpeg: screenshots and images → OCR via Google Vision API
 							Use list_attachments first to get the attachment_id. Ideal for reading investigation reports, domain lists, DNS screenshots and phishing page captures.`,
 		},
-		func(ctx context.Context, req *mcp.CallToolRequest, input GetAttachmentTextInput) (*mcp.CallToolResult, GetAttachmentTextOutput, error) {
+		func(ctx context.Context, _ *mcp.CallToolRequest, input GetAttachmentTextInput) (*mcp.CallToolResult, GetAttachmentTextOutput, error) {
 			attachments, err := client.GetAllAttachments(ctx, input.TicketID)
 			if err != nil {
 				return nil, GetAttachmentTextOutput{}, fmt.Errorf("get attachments: %w", err)
@@ -370,7 +382,12 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 				}
 			}
 			if att == nil {
-				return nil, GetAttachmentTextOutput{}, fmt.Errorf("attachment %d not found on ticket %d", input.AttachmentID, input.TicketID)
+				return nil, GetAttachmentTextOutput{}, fmt.Errorf(
+					"%w: id=%d ticket=%d",
+					ErrAttachmentNotFound,
+					input.AttachmentID,
+					input.TicketID,
+				)
 			}
 
 			data, err := client.DownloadAttachment(ctx, att.URL)
@@ -391,12 +408,13 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 		},
 	)
 
-	mcp.AddTool(server,
+	mcp.AddTool(
+		server,
 		&mcp.Tool{
 			Name:        "list_attachments",
 			Description: "List all attachments on a Freshdesk ticket including files in conversation replies. Returns attachment id, name, content_type and size in bytes. Always call this before get_attachment_text, query_attachment or find_image_attachments to discover attachment IDs.",
 		},
-		func(ctx context.Context, req *mcp.CallToolRequest, input ListAttachmentsInput) (*mcp.CallToolResult, ListAttachmentsOutput, error) {
+		func(ctx context.Context, _ *mcp.CallToolRequest, input ListAttachmentsInput) (*mcp.CallToolResult, ListAttachmentsOutput, error) {
 			attachments, err := client.GetAllAttachments(ctx, input.TicketID)
 			if err != nil {
 				return nil, ListAttachmentsOutput{}, fmt.Errorf("list_attachments: %w", err)
@@ -419,12 +437,13 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 		},
 	)
 
-	mcp.AddTool(server,
+	mcp.AddTool(
+		server,
 		&mcp.Tool{
 			Name:        "query_attachment",
 			Description: "Search within a JSON attachment on a Freshdesk ticket. Useful for finding specific domains or threat feeds in large JSON files.",
 		},
-		func(ctx context.Context, req *mcp.CallToolRequest, input QueryAttachmentInput) (*mcp.CallToolResult, QueryAttachmentOutput, error) {
+		func(ctx context.Context, _ *mcp.CallToolRequest, input QueryAttachmentInput) (*mcp.CallToolResult, QueryAttachmentOutput, error) {
 			attachments, err := client.GetAllAttachments(ctx, input.TicketID)
 			if err != nil {
 				return nil, QueryAttachmentOutput{}, fmt.Errorf("get attachments: %w", err)
@@ -438,7 +457,7 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 				}
 			}
 			if att == nil {
-				return nil, QueryAttachmentOutput{}, fmt.Errorf("attachment %d not found", input.AttachmentID)
+				return nil, QueryAttachmentOutput{}, fmt.Errorf("%w: id=%d", ErrAttachmentNotFound, input.AttachmentID)
 			}
 
 			data, err := client.DownloadAttachment(ctx, att.URL)
@@ -460,7 +479,8 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 		},
 	)
 
-	mcp.AddTool(server,
+	mcp.AddTool(
+		server,
 		&mcp.Tool{
 			Name: "find_image_attachments",
 			Description: `Scan multiple tickets at once and return all image attachments (png, jpg, jpeg).
@@ -469,7 +489,7 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 							2. find_image_attachments with those IDs → find screenshots
 							3. get_attachment_text on attachment_id → OCR the image`,
 		},
-		func(ctx context.Context, req *mcp.CallToolRequest, input FindImageAttachmentsInput) (*mcp.CallToolResult, FindImageAttachmentsOutput, error) {
+		func(ctx context.Context, _ *mcp.CallToolRequest, input FindImageAttachmentsInput) (*mcp.CallToolResult, FindImageAttachmentsOutput, error) {
 			var results []ImageAttachmentInfo
 
 			for _, ticketID := range input.TicketIDs {
@@ -497,12 +517,13 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 		},
 	)
 
-	mcp.AddTool(server,
+	mcp.AddTool(
+		server,
 		&mcp.Tool{
 			Name:        "find_requester",
 			Description: "Search Freshdesk contacts by name or email. Returns requester_id which can then be passed to search_tickets to find all tickets submitted by that person.",
 		},
-		func(ctx context.Context, req *mcp.CallToolRequest, input FindRequesterInput) (*mcp.CallToolResult, FindRequesterOutput, error) {
+		func(ctx context.Context, _ *mcp.CallToolRequest, input FindRequesterInput) (*mcp.CallToolResult, FindRequesterOutput, error) {
 			contacts, err := client.SearchContacts(ctx, input.Query)
 			if err != nil {
 				return nil, FindRequesterOutput{}, fmt.Errorf("find_requester: %w", err)
@@ -520,12 +541,13 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 		},
 	)
 
-	mcp.AddTool(server,
+	mcp.AddTool(
+		server,
 		&mcp.Tool{
 			Name:        "find_company",
 			Description: "Search Freshdesk companies by name. Returns company_id which can be used in search_tickets to find all tickets from a specific organisation. Example: find_company query='Defence' then search_tickets company_id=<id>.",
 		},
-		func(ctx context.Context, req *mcp.CallToolRequest, input FindCompanyInput) (*mcp.CallToolResult, FindCompanyOutput, error) {
+		func(ctx context.Context, _ *mcp.CallToolRequest, input FindCompanyInput) (*mcp.CallToolResult, FindCompanyOutput, error) {
 			companies, err := client.SearchCompanies(ctx, input.Query)
 			if err != nil {
 				return nil, FindCompanyOutput{}, fmt.Errorf("find_company: %w", err)
@@ -542,12 +564,13 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 		},
 	)
 
-	mcp.AddTool(server,
+	mcp.AddTool(
+		server,
 		&mcp.Tool{
 			Name:        "find_agent",
 			Description: `Search Freshdesk agents by name or email. Returns agent_id which can be passed to search_tickets agent_id to find tickets assigned to that agent.`,
 		},
-		func(ctx context.Context, req *mcp.CallToolRequest, input FindAgentInput) (*mcp.CallToolResult, FindAgentOutput, error) {
+		func(ctx context.Context, _ *mcp.CallToolRequest, input FindAgentInput) (*mcp.CallToolResult, FindAgentOutput, error) {
 			agents, err := client.SearchAgents(ctx, input.Query)
 			if err != nil {
 				return nil, FindAgentOutput{}, fmt.Errorf("find_agent: %w", err)
@@ -564,7 +587,8 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 		},
 	)
 
-	mcp.AddTool(server,
+	mcp.AddTool(
+		server,
 		&mcp.Tool{
 			Name: "get_ticket_summary",
 			Description: `Retrieve a complete summary of a Freshdesk ticket in one call: ticket details, all conversation replies and notes, and list of attachments.
@@ -574,7 +598,7 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 	- conversations: all replies and notes with body_text and direction (incoming=customer, outgoing=agent)
 	- attachments: list of files with id, name, content_type, size (use get_attachment_text to read them)`,
 		},
-		func(ctx context.Context, req *mcp.CallToolRequest, input GetTicketSummaryInput) (*mcp.CallToolResult, GetTicketSummaryOutput, error) {
+		func(ctx context.Context, _ *mcp.CallToolRequest, input GetTicketSummaryInput) (*mcp.CallToolResult, GetTicketSummaryOutput, error) {
 			// fetch all three in parallel
 			var (
 				ticket      *freshdesk.Ticket
@@ -645,7 +669,8 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 		},
 	)
 
-	mcp.AddTool(server,
+	mcp.AddTool(
+		server,
 		&mcp.Tool{
 			Name: "list_tickets",
 			Description: `Return all Freshdesk tickets with full fields for reporting and analysis. All filters are optional.
@@ -657,7 +682,7 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 	Use this for bulk analysis - e.g. all false positives this month, all high priority open tickets.
 	For company or requester filtering use search_tickets instead.`,
 		},
-		func(ctx context.Context, req *mcp.CallToolRequest, input ListTicketsInput) (*mcp.CallToolResult, ListTicketsOutput, error) {
+		func(ctx context.Context, _ *mcp.CallToolRequest, input ListTicketsInput) (*mcp.CallToolResult, ListTicketsOutput, error) {
 			tickets, err := client.SearchTickets(ctx, &freshdesk.TicketFilter{
 				Status:        input.Status,
 				Priority:      input.Priority,
@@ -671,15 +696,16 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 			}
 
 			results := make([]GetTicketOutput, len(tickets))
-			for i, t := range tickets {
+			for i := range tickets {
 				sm, _ := client.GetStatusMap(ctx)
-				results[i] = ticketToOutput(&t, sm, groupMap)
+				results[i] = ticketToOutput(&tickets[i], sm, groupMap)
 			}
 
 			return nil, ListTicketsOutput{Total: len(results), Results: results}, nil
 		},
 	)
-	mcp.AddTool(server,
+	mcp.AddTool(
+		server,
 		&mcp.Tool{
 			Name: "get_description_images",
 			Description: `Extract and OCR inline images embedded in a ticket's description HTML body. 
@@ -687,7 +713,7 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 							Use this tool when get_ticket_summary shows a non-empty description but list_attachments finds no images, or when the description mentions a screenshot/table/log.
 							Returns OCR text from each inline image found.`,
 		},
-		func(ctx context.Context, req *mcp.CallToolRequest, input GetDescriptionImagesInput) (*mcp.CallToolResult, GetDescriptionImagesOutput, error) {
+		func(ctx context.Context, _ *mcp.CallToolRequest, input GetDescriptionImagesInput) (*mcp.CallToolResult, GetDescriptionImagesOutput, error) {
 			ticket, err := client.GetTicket(ctx, input.TicketID)
 			if err != nil {
 				return nil, GetDescriptionImagesOutput{}, fmt.Errorf("get ticket: %w", err)
@@ -738,7 +764,7 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 							Example workflow: list_groups → find "Threat Intelligence" id → search_tickets group_id=<id>
 							Known groups: ` + groupDesc + ``,
 		},
-		func(ctx context.Context, req *mcp.CallToolRequest, input struct{}) (*mcp.CallToolResult, ListGroupsOutput, error) {
+		func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, ListGroupsOutput, error) {
 			groups, err := client.ListGroups(ctx)
 			if err != nil {
 				return nil, ListGroupsOutput{}, fmt.Errorf("list_groups: %w", err)
@@ -750,7 +776,8 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 			return nil, ListGroupsOutput{Total: len(results), Results: results}, nil
 		},
 	)
-	mcp.AddTool(server,
+	mcp.AddTool(
+		server,
 		&mcp.Tool{
 			Name: "batch_get_ticket_summaries",
 			Description: `Fetch full summaries for multiple tickets in a single call. Each summary includes ticket details, all conversations, and attachment list.
@@ -760,7 +787,7 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 							2. batch_get_ticket_summaries with those IDs → get all summaries at once
 							Returns array of summaries in the same format as get_ticket_summary.`,
 		},
-		func(ctx context.Context, req *mcp.CallToolRequest, input BatchGetTicketSummariesInput) (*mcp.CallToolResult, BatchGetTicketSummariesOutput, error) {
+		func(ctx context.Context, _ *mcp.CallToolRequest, input BatchGetTicketSummariesInput) (*mcp.CallToolResult, BatchGetTicketSummariesOutput, error) {
 			type result struct {
 				idx     int
 				summary GetTicketSummaryOutput
@@ -773,11 +800,11 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 			g, gctx := errgroup.WithContext(ctx)
 
 			for i, ticketID := range input.TicketIDs {
-				i, ticketID := i, ticketID
+				i, ticketID := i, ticketID //nolint:copyloopvar
 				g.Go(func() error {
 					var (
-						ticket      *freshdesk.Ticket
-						convs       []freshdesk.Conversation
+						ticket *freshdesk.Ticket
+						convs  []freshdesk.Conversation
 					)
 
 					inner, innerCtx := errgroup.WithContext(gctx)
@@ -800,15 +827,16 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 						return nil
 					})
 
-
 					if err := inner.Wait(); err != nil {
 						ch <- result{idx: i, err: err}
-						return nil
+						return err
 					}
 
 					// derive attachments from already-fetched ticket and conversations
 					// derive attachments from already-fetched ticket and conversations
-					attachments := append(ticket.Attachments, func() []freshdesk.Attachment {
+					var attachments []freshdesk.Attachment
+					attachments = append(attachments, ticket.Attachments...)
+					attachments = append(attachments, func() []freshdesk.Attachment {
 						var ca []freshdesk.Attachment
 						for _, conv := range convs {
 							ca = append(ca, conv.Attachments...)
@@ -857,7 +885,7 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 				})
 			}
 
-			g.Wait()
+			_ = g.Wait()
 			close(ch)
 
 			for r := range ch {
@@ -907,23 +935,24 @@ func main() {
 			os.Exit(1)
 		}
 
-		slog.Info("freshdesk-mcp HTTP server starting", "addr", addr)
+		slog.Info("freshdesk-mcp HTTP server starting", slog.String("addr", addr))
 
-		handler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
+		handler := mcp.NewStreamableHTTPHandler(func(_ *http.Request) *mcp.Server {
 			return server
 		}, &mcp.StreamableHTTPOptions{Stateless: true})
 
 		mux := http.NewServeMux()
 		mux.Handle("/mcp", authMiddleware(token, handler))
-		mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"status":"ok"}`))
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
 		})
 
 		httpServer := &http.Server{
-			Addr:    addr,
-			Handler: mux,
+			Addr:              addr,
+			Handler:           mux,
+			ReadHeaderTimeout: 10 * time.Second,
 		}
 
 		// graceful shutdown on SIGTERM/SIGINT
@@ -931,8 +960,8 @@ func main() {
 		defer stop()
 
 		go func() {
-			if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				slog.Error("http server error", "err", err)
+			if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				slog.Error("http server error", slog.Any("err", err))
 				os.Exit(1)
 			}
 		}()
@@ -944,14 +973,14 @@ func main() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := httpServer.Shutdown(shutdownCtx); err != nil {
-			slog.Error("shutdown error", "err", err)
+			slog.Error("shutdown error", slog.Any("err", err))
 		}
 		slog.Info("shutdown complete")
 
 	default:
 		slog.Info("freshdesk-mcp server starting on stdio")
 		if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
-			slog.Error("server error", "err", err)
+			slog.Error("server error", slog.Any("err", err))
 			os.Exit(1)
 		}
 	}
