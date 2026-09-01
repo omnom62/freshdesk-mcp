@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/omnom62/freshdesk-mcp/internal/ocr"
 )
 
 var ErrUnsupportedType = errors.New("unsupported attachment type")
@@ -12,7 +14,12 @@ var ErrUnsupportedType = errors.New("unsupported attachment type")
 // FromAttachment routes to the correct extractor based on content type and filename.
 //
 //nolint:cyclop
-func FromAttachment(ctx context.Context, name, contentType string, data []byte, gcpProject string) (string, error) {
+func FromAttachment(
+	ctx context.Context,
+	name, contentType string,
+	data []byte,
+	ocrProvider ocr.Provider,
+) (string, error) {
 	switch {
 	case contentType == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
 		strings.HasSuffix(name, ".docx"):
@@ -36,7 +43,7 @@ func FromAttachment(ctx context.Context, name, contentType string, data []byte, 
 		strings.HasSuffix(name, ".png") ||
 		strings.HasSuffix(name, ".jpg") ||
 		strings.HasSuffix(name, ".jpeg"):
-		return ImageOCR(ctx, data, gcpProject)
+		return ocrProvider.ExtractText(ctx, data)
 	default:
 		return "", fmt.Errorf("%w: %s (%s)", ErrUnsupportedType, name, contentType)
 	}

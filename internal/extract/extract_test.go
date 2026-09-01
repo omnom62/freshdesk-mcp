@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/omnom62/freshdesk-mcp/internal/ocr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -125,28 +126,28 @@ func TestDocx_InvalidZip(t *testing.T) {
 
 func TestFromAttachment_JSON_byContentType(t *testing.T) {
 	data := []byte(`{"key":"value"}`)
-	result, err := FromAttachment(context.Background(), "file.json", "application/json", data, "")
+	result, err := FromAttachment(context.Background(), "file.json", "application/json", data, ocr.Noop{})
 	require.NoError(t, err)
 	assert.Contains(t, result, "key")
 }
 
 func TestFromAttachment_JSON_byExtension(t *testing.T) {
 	data := []byte(`{"key":"value"}`)
-	result, err := FromAttachment(context.Background(), "file.json", "application/octet-stream", data, "")
+	result, err := FromAttachment(context.Background(), "file.json", "application/octet-stream", data, ocr.Noop{})
 	require.NoError(t, err)
 	assert.Contains(t, result, "key")
 }
 
 func TestFromAttachment_TXT(t *testing.T) {
 	data := []byte("plain text content")
-	result, err := FromAttachment(context.Background(), "file.txt", "text/plain", data, "")
+	result, err := FromAttachment(context.Background(), "file.txt", "text/plain", data, ocr.Noop{})
 	require.NoError(t, err)
 	assert.Equal(t, "plain text content", result)
 }
 
 func TestFromAttachment_CSV(t *testing.T) {
 	data := []byte("a,b,c\n1,2,3")
-	result, err := FromAttachment(context.Background(), "file.csv", "text/csv", data, "")
+	result, err := FromAttachment(context.Background(), "file.csv", "text/csv", data, ocr.Noop{})
 	require.NoError(t, err)
 	assert.Contains(t, result, "a,b,c")
 }
@@ -158,20 +159,20 @@ func TestFromAttachment_Docx(t *testing.T) {
 		"file.docx",
 		"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 		data,
-		"",
+		ocr.Noop{},
 	)
 	require.NoError(t, err)
 	assert.Contains(t, result, "docx content")
 }
 
 func TestFromAttachment_Unsupported(t *testing.T) {
-	_, err := FromAttachment(context.Background(), "file.pdf", "application/pdf", []byte("data"), "")
+	_, err := FromAttachment(context.Background(), "file.pdf", "application/pdf", []byte("data"), ocr.Noop{})
 	assert.ErrorIs(t, err, ErrUnsupportedType)
 }
 
 func TestFromAttachment_Docx_byExtension(t *testing.T) {
 	data := makeDocx(t, "docx by ext")
-	result, err := FromAttachment(context.Background(), "file.docx", "application/octet-stream", data, "")
+	result, err := FromAttachment(context.Background(), "file.docx", "application/octet-stream", data, ocr.Noop{})
 	require.NoError(t, err)
 	assert.Contains(t, result, "docx by ext")
 }

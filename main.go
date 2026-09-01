@@ -16,6 +16,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/omnom62/freshdesk-mcp/internal/extract"
 	"github.com/omnom62/freshdesk-mcp/internal/freshdesk"
+	"github.com/omnom62/freshdesk-mcp/internal/ocr"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -241,7 +242,7 @@ var (
 )
 
 //nolint:gocognit,cyclop
-func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server {
+func buildServer(client *freshdesk.Client, ocrProvider ocr.Provider) *mcp.Server {
 	// build dynamic group description and lookup map
 	groupDesc := ""
 	groupMap := make(map[int64]string)
@@ -395,7 +396,7 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 				return nil, GetAttachmentTextOutput{}, fmt.Errorf("download: %w", err)
 			}
 
-			text, err := extract.FromAttachment(ctx, att.Name, att.ContentType, data, gcpVisionProject)
+			text, err := extract.FromAttachment(ctx, att.Name, att.ContentType, data, ocrProvider)
 			if err != nil {
 				return nil, GetAttachmentTextOutput{}, fmt.Errorf("extract: %w", err)
 			}
@@ -740,7 +741,7 @@ func buildServer(client *freshdesk.Client, gcpVisionProject string) *mcp.Server 
 					continue
 				}
 
-				text, err := extract.ImageOCR(ctx, data, gcpVisionProject)
+				text, err := ocrProvider.ExtractText(ctx, data)
 				if err != nil {
 					results = append(results, InlineImageResult{URL: imgURL, Text: fmt.Sprintf("ocr error: %v", err)})
 					continue
@@ -924,7 +925,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	server := buildServer(client, gcpVisionProject)
+	var provider ocr.Provider
+	if gcpVisionProject != "" {
+		provider = ocr.NewGCPVision(gcpVisionProject)
+	} else {
+		provider = ocr.Noop{}
+	}
+	server := buildServer(client, provider)
 
 	switch os.Getenv("MCP_TRANSPORT") {
 	case "http":
