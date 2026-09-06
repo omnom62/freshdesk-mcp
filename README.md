@@ -56,6 +56,10 @@ AI client → HTTPS POST /mcp → freshdesk-mcp → Freshdesk API
 ### Docker (any platform)
 
 ```bash
+# Pull pre-built image
+docker pull ghcr.io/omnom62/freshdesk-mcp:latest
+
+# Or build from source
 docker build -t freshdesk-mcp .
 
 docker run -p 8080:8080 \
