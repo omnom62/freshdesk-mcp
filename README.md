@@ -18,6 +18,8 @@ AI client → HTTPS POST /mcp → freshdesk-mcp → Freshdesk API
 | `get_ticket` | Fetch a single ticket by ID. Returns status name, group name, company ID. |
 | `get_ticket_summary` | Ticket + all conversations + attachments in one call. |
 | `batch_get_ticket_summaries` | Multiple ticket summaries in parallel. |
+| `classify_ticket` | Classify a ticket type using AI (requires `ML_PROVIDER`). |
+| `suggest_resolution` | Suggest resolution, draft reply and next steps using AI (requires `ML_PROVIDER`). |
 | `search_tickets` | Filter by query, status, priority, type, overdue, escalated, dates, company, requester, agent, group. Full ticket history. |
 | `list_tickets` | All tickets with optional filters. |
 | `get_conversations` | All replies and notes for a ticket (fully paginated). |
@@ -50,6 +52,11 @@ AI client → HTTPS POST /mcp → freshdesk-mcp → Freshdesk API
 | `GCP_VISION_PROJECT` | no | GCP project ID for Vision OCR. If unset, image OCR tools return an error. |
 | `MCP_TRANSPORT` | no | Set to `http` for HTTP transport (default in the Docker image). |
 | `PORT` | no | HTTP port (default `8080`). Set automatically by Cloud Run. |
+| `ML_PROVIDER` | no | AI provider for ticket classification: `claude`, `ollama`. Unset disables ML tools. |
+| `ANTHROPIC_API_KEY` | no | Anthropic API key — required when `ML_PROVIDER=claude`. |
+| `OLLAMA_URL` | no | Ollama base URL (default `http://localhost:11434`) — used when `ML_PROVIDER=ollama`. |
+| `OLLAMA_MODEL` | no | Ollama model name e.g. `llama3.2`, `qwen2.5:1.5b` — required when `ML_PROVIDER=ollama`. |
+| `ML_SYSTEM_PROMPT` | no | Custom system prompt for ML tools. Defaults to a generic support engineer persona. |
 
 ## Deployment
 
