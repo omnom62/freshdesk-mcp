@@ -16,6 +16,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/omnom62/freshdesk-mcp/internal/extract"
 	"github.com/omnom62/freshdesk-mcp/internal/freshdesk"
+	"github.com/omnom62/freshdesk-mcp/internal/ml"
 	"github.com/omnom62/freshdesk-mcp/internal/ocr"
 	"golang.org/x/sync/errgroup"
 )
@@ -241,8 +242,22 @@ var (
 	ErrAttachmentNotFound = errors.New("attachment not found")
 )
 
+type ResolutionOutput struct {
+	SuggestedAction string   `json:"suggested_action"`
+	DraftReply      string   `json:"draft_reply"`
+	NextSteps       []string `json:"next_steps"`
+	Confidence      float64  `json:"confidence"`
+}
+
+type Classification struct {
+	Type       string   `json:"type"`
+	Confidence float64  `json:"confidence"`
+	Reasoning  string   `json:"reasoning"`
+	Tags       []string `json:"tags,omitempty"`
+}
+
 //nolint:gocognit,cyclop
-func buildServer(client *freshdesk.Client, ocrProvider ocr.Provider) *mcp.Server {
+func buildServer(client *freshdesk.Client, ocrProvider ocr.Provider, mlProvider ml.Provider) *mcp.Server {
 	// build dynamic group description and lookup map
 	groupDesc := ""
 	groupMap := make(map[int64]string)
@@ -901,9 +916,114 @@ func buildServer(client *freshdesk.Client, ocrProvider ocr.Provider) *mcp.Server
 			}, nil
 		},
 	)
+
+	mcp.AddTool(
+		server,
+		&mcp.Tool{
+			Name: "classify_ticket",
+			Description: `Classify a Freshdesk ticket type using AI. Returns suggested type with confidence and reasoning.
+							Use when a ticket has no type set or you want to verify the classification.
+							Valid types are fetched dynamically from Freshdesk.
+							Returns: type, confidence (0-1), reasoning, tags.`,
+		},
+		func(ctx context.Context, _ *mcp.CallToolRequest, input GetTicketInput) (*mcp.CallToolResult, Classification, error) {
+			ticket, err := client.GetTicket(ctx, input.TicketID)
+			if err != nil {
+				return nil, Classification{}, fmt.Errorf("get ticket: %w", err)
+			}
+
+			// fetch valid types from Freshdesk ticket fields
+			validTypes, err := client.GetTicketTypes(ctx)
+			if err != nil {
+				// fall back to known types if fetch fails
+				validTypes = []string{"False Positive", "False Negative", "Service Request", "Incident"}
+			}
+
+			result, err := mlProvider.Classify(ctx, ml.ClassifyInput{
+				Subject:     ticket.Subject,
+				Description: ticket.DescriptionText,
+				ValidTypes:  validTypes,
+			})
+			if err != nil {
+				return nil, Classification{}, fmt.Errorf("classify: %w", err)
+			}
+
+			return nil, Classification{
+				Type:       result.Type,
+				Confidence: result.Confidence,
+				Reasoning:  result.Reasoning,
+				Tags:       result.Tags,
+			}, nil
+		},
+	)
+
+	mcp.AddTool(
+		server,
+		&mcp.Tool{
+			Name: "suggest_resolution",
+			Description: `Suggest a resolution for a Freshdesk ticket using AI.
+							Fetches the full ticket context, classifies it, then suggests:
+							- suggested_action: what to do to resolve the ticket
+							- draft_reply: formal reply to send to the customer
+							- next_steps: checklist of actions to take
+							Use this when investigating a ticket and you need resolution guidance.`,
+		},
+		func(ctx context.Context, _ *mcp.CallToolRequest, input GetTicketInput) (*mcp.CallToolResult, ResolutionOutput, error) {
+			// fetch full ticket context
+			ticket, err := client.GetTicket(ctx, input.TicketID)
+			if err != nil {
+				return nil, ResolutionOutput{}, fmt.Errorf("get ticket: %w", err)
+			}
+
+			convs, err := client.GetConversations(ctx, input.TicketID)
+			if err != nil {
+				return nil, ResolutionOutput{}, fmt.Errorf("get conversations: %w", err)
+			}
+
+			// collect conversation texts
+			convTexts := make([]string, len(convs))
+			for i, c := range convs {
+				convTexts[i] = c.BodyText
+			}
+
+			// classify first
+			validTypes, err := client.GetTicketTypes(ctx)
+			if err != nil {
+				validTypes = []string{"False Positive", "False Negative", "Service Request", "Incident"}
+			}
+
+			classification, err := mlProvider.Classify(ctx, ml.ClassifyInput{
+				Subject:     ticket.Subject,
+				Description: ticket.DescriptionText,
+				ValidTypes:  validTypes,
+			})
+			if err != nil {
+				return nil, ResolutionOutput{}, fmt.Errorf("classify: %w", err)
+			}
+
+			// suggest resolution
+			resolution, err := mlProvider.SuggestResolution(ctx, ml.ResolutionInput{
+				Subject:         ticket.Subject,
+				DescriptionText: ticket.DescriptionText,
+				Conversations:   convTexts,
+				TicketType:      classification.Type,
+			})
+			if err != nil {
+				return nil, ResolutionOutput{}, fmt.Errorf("suggest resolution: %w", err)
+			}
+
+			return nil, ResolutionOutput{
+				SuggestedAction: resolution.SuggestedAction,
+				DraftReply:      resolution.DraftReply,
+				NextSteps:       resolution.NextSteps,
+				Confidence:      resolution.Confidence,
+			}, nil
+		},
+	)
 	return server
 }
 
+//nolint:cyclop
 func main() {
 	// GOMAXPROCS — Cloud Run allocates fractional CPUs, default GOMAXPROCS
 	// may be set to host CPU count. Cap it to what's actually available.
@@ -931,7 +1051,19 @@ func main() {
 	} else {
 		provider = ocr.Noop{}
 	}
-	server := buildServer(client, provider)
+	// ML provider
+	mlSystemPrompt := os.Getenv("ML_SYSTEM_PROMPT")
+	var mlProvider ml.Provider
+	switch os.Getenv("ML_PROVIDER") {
+	case "claude":
+		mlProvider = ml.NewClaudeProvider(os.Getenv("ANTHROPIC_API_KEY"), mlSystemPrompt)
+	case "ollama":
+		mlProvider = ml.NewOllamaProvider(os.Getenv("OLLAMA_URL"), os.Getenv("OLLAMA_MODEL"), mlSystemPrompt)
+	default:
+		mlProvider = ml.Noop{}
+	}
+
+	server := buildServer(client, provider, mlProvider)
 
 	switch os.Getenv("MCP_TRANSPORT") {
 	case "http":

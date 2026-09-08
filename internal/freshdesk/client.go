@@ -20,8 +20,9 @@ import (
 )
 
 var (
-	ErrRateLimited = errors.New("HTTP 429: rate limited")
-	ErrHTTPError   = errors.New("HTTP error")
+	ErrTicketTypeNotFound = errors.New("ticket_type field not found")
+	ErrRateLimited        = errors.New("HTTP 429: rate limited")
+	ErrHTTPError          = errors.New("HTTP error")
 )
 
 const (
@@ -570,4 +571,28 @@ func (c *Client) GetStatusMap(ctx context.Context) (map[int]string, error) {
 
 	c.statusMap.Set(cacheKey, statusMap)
 	return statusMap, nil
+}
+
+// GetTicketTypes returns the list of valid ticket types from Freshdesk ticket fields.
+func (c *Client) GetTicketTypes(ctx context.Context) ([]string, error) {
+	body, err := c.doRequest(ctx, "/api/v2/ticket_fields")
+	if err != nil {
+		return nil, fmt.Errorf("GetTicketTypes: %w", err)
+	}
+
+	var fields []struct {
+		Name    string   `json:"name"`
+		Choices []string `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &fields); err != nil {
+		return nil, fmt.Errorf("decode ticket fields: %w", err)
+	}
+
+	for _, f := range fields {
+		if f.Name == "ticket_type" {
+			return f.Choices, nil
+		}
+	}
+
+	return nil, ErrTicketTypeNotFound
 }
