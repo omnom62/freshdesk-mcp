@@ -1059,6 +1059,13 @@ func main() {
 		mlProvider = ml.NewClaudeProvider(os.Getenv("ANTHROPIC_API_KEY"), mlSystemPrompt)
 	case "ollama":
 		mlProvider = ml.NewOllamaProvider(os.Getenv("OLLAMA_URL"), os.Getenv("OLLAMA_MODEL"), mlSystemPrompt)
+	case "vertexai":
+		mlProvider = ml.NewVertexAI(
+			os.Getenv("GCP_VISION_PROJECT"),
+			os.Getenv("VERTEX_LOCATION"),
+			os.Getenv("VERTEX_MODEL"),
+			mlSystemPrompt,
+		)
 	default:
 		mlProvider = ml.Noop{}
 	}
