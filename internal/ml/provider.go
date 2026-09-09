@@ -35,7 +35,7 @@ type Resolution struct {
 }
 
 // DefaultSystemPrompt is used when no custom prompt is configured.
-const DefaultSystemPrompt = "You are an expert support engineer helping resolve customer support tickets."
+const DefaultSystemPrompt = "You are an expert support engineer. Classify tickets and suggest resolutions based on ticket content. Always respond with valid JSON only."
 
 // Provider classifies and suggests resolutions for Freshdesk tickets.
 type Provider interface {
